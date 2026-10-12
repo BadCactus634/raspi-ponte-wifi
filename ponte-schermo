@@ -6,6 +6,8 @@ WAN=wlan0
 LAN=eth0
 PASSO=2
 STATO_LOGIN=/run/portale-login/stato
+NON_CONTARE_MAC=""
+[ -f /etc/ponte/schermo.conf ] && . /etc/ponte/schermo.conf
 
 for f in Uni2-TerminusBold20x10 Lat15-TerminusBold20x10 Uni2-Terminus20x10; do
   [ -f /usr/share/consolefonts/$f.psf.gz ] && setfont /usr/share/consolefonts/$f.psf.gz 2>/dev/null && break
@@ -63,7 +65,10 @@ while true; do
   for ip in $(ip -4 neigh show dev $LAN nud stale 2>/dev/null | cut -d' ' -f1); do
     ping -c1 -W1 -I $LAN "$ip" >/dev/null 2>&1 &
   done
-  disp=$(ip -4 neigh show dev $LAN 2>/dev/null | grep -cE 'REACHABLE|STALE|DELAY|PROBE')
+  # Lo switch gestito prende un indirizzo ma non e' un dispositivo: NON_CONTARE_MAC.
+  disp=$(ip -4 neigh show dev $LAN 2>/dev/null | awk -v no="${NON_CONTARE_MAC,,}" '
+    BEGIN { n = split(no, l, " "); for (i = 1; i <= n; i++) salta[l[i]] = 1 }
+    /REACHABLE|STALE|DELAY|PROBE/ && !(tolower($3) in salta) { c++ } END { print c + 0 }')
   link=$(cat /sys/class/net/$LAN/carrier 2>/dev/null)
   if [ "$link" = 1 ]; then
     lan="${V}$(cat /sys/class/net/$LAN/speed 2>/dev/null) Mbit${N}"

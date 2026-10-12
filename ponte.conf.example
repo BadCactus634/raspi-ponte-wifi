@@ -13,6 +13,10 @@ MAC_CLONATO=""
 # Indirizzo del Pi sulla LAN (lato switch). I dispositivi prendono 10.42.0.x via DHCP.
 LAN_IP="10.42.0.1/24"
 
+# MAC da non contare tra i dispositivi sullo schermino, separati da spazi.
+# Serve per uno switch gestito, che prende un indirizzo via DHCP ma non e' un dispositivo.
+NON_CONTARE_MAC=""
+
 # Credenziali del portale (Cisco ISE) per il login automatico.
 # Vuote = niente login automatico: ti autentichi a mano da un PC sullo switch.
 PORTALE_USER=""

@@ -51,6 +51,7 @@ install -d -m 700 /etc/ponte
 umask 077
 printf 'PORTALE_USER=%q\nPORTALE_PASS=%q\n' "$PORTALE_USER" "$PORTALE_PASS" > /etc/ponte/portale.conf
 umask 022
+printf 'NON_CONTARE_MAC=%q\n' "${NON_CONTARE_MAC:-}" > /etc/ponte/schermo.conf
 
 cat > /etc/systemd/system/portale-login.service <<'EOF'
 [Unit]

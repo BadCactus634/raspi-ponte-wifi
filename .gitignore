@@ -1,0 +1,12 @@
+# Dati personali: credenziali, chiavi SSH, configurazione vera
+credenziali/
+ponte.conf
+primo-avvio/user-data
+
+# Overlay dello schermo di goodtft (licenza non chiara): si scarica, vedi README
+tft35a.dtbo
+
+# Immagini e log
+*.img
+*.img.xz
+*.log

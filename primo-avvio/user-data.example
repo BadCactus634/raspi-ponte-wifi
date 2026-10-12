@@ -1,0 +1,22 @@
+#cloud-config
+hostname: ponte
+manage_etc_hosts: true
+timezone: Europe/Rome
+keyboard:
+  model: pc105
+  layout: "it"
+users:
+  - name: pi
+    groups: users,adm,dialout,audio,netdev,video,plugdev,input,gpio,spi,i2c,render,sudo
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: HASH_DELLA_PASSWORD   # openssl passwd -6 "la-tua-password"
+    ssh_authorized_keys:
+      - LA_TUA_CHIAVE_PUBBLICA_SSH   # contenuto del tuo file .pub
+    sudo: ALL=(ALL) NOPASSWD:ALL
+enable_ssh: true
+ssh_pwauth: true
+# Configura il ponte e riavvia. Le credenziali Fortinet escono dalla partizione di boot
+# (leggibile da chiunque abbia la SD) e restano solo in /root/ponte e /etc/ponte.
+runcmd:
+  - [bash, -c, "install -d -m 700 /root/ponte && cp -r /boot/firmware/ponte/. /root/ponte/ && rm -rf /boot/firmware/ponte && systemctl enable ssh && bash /root/ponte/setup.sh > /var/log/ponte-setup.log 2>&1; sync; reboot"]

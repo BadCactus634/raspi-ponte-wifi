@@ -1,0 +1,121 @@
+#!/bin/bash
+# Login automatico al captive portal della rete WiFi (Cisco ISE, "Central Web Auth").
+# Lo lancia portale-login.timer ogni 2 minuti e NetworkManager quando wlan0 si connette.
+#
+# Flusso del portale, come fa un browser:
+#   1. la prova HTTP viene intercettata: 200 con Location / meta refresh verso .../portal/gateway
+#   2. gateway -> PortalSetup.action: modulo LoginSubmit.action con token e portal
+#   3. dopo il login, zero o piu' pagine con un modulo Continue.action?from=...
+#      (MAX_DEVICES: cancella il dispositivo registrato piu' vecchio; POST_ACCESS_BANNER)
+#   4. pagina Success: il JavaScript chiama DoCoA.action, che riautorizza il dispositivo.
+#      Senza questo passo il portale dice "Success" ma non si naviga.
+set -u
+CONF=/etc/ponte/portale.conf
+PROVA=http://connectivitycheck.gstatic.com/generate_204
+TMP=/run/portale-login
+# Il portale risponde 404 a curl: serve un user-agent da browser
+UA="Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+mkdir -p "$TMP"
+exec 9>"$TMP/lock"
+flock -n 9 || exit 0
+
+log() { logger -t portale-login "$*"; echo "$*"; }
+# Stato in una riga per lo schermino (ponte-schermo)
+stato() { echo "$*" > "$TMP/stato"; }
+
+PORTALE_USER=""
+PORTALE_PASS=""
+[ -f "$CONF" ] && . "$CONF"
+
+online() {
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PROVA")" = 204 ]
+}
+
+# Valore del primo <input name="$1" value="..."> della pagina $2
+campo() {
+  grep -oE "<input[^>]*name=\"$1\"[^>]*>" "$2" | grep -oE 'value="[^"]*"' | head -n1 | cut -d'"' -f2
+}
+
+# POST sul portale: $1 = pagina di destinazione (relativa a /portal/), $2 = file di output, poi i campi
+invia() {
+  local dove=$1 out=$2
+  shift 2
+  local args=()
+  for c in "$@"; do args+=(--data-urlencode "$c"); done
+  curl -sk --max-time 30 -A "$UA" -L -b "$TMP/cookie" -c "$TMP/cookie" -o "$out" "${args[@]}" "$BASE/$dove"
+}
+
+if online; then
+  grep -q '^online' "$TMP/stato" 2>/dev/null || stato "online"
+  exit 0
+fi
+
+if [ -z "$PORTALE_USER" ] || [ -z "$PORTALE_PASS" ]; then
+  log "offline e nessuna credenziale in $CONF: serve il login a mano da un PC sulla LAN"
+  stato "login a mano"
+  exit 1
+fi
+
+# 1. Dove ci manda il portale (header Location o meta refresh)
+curl -s --max-time 10 -D "$TMP/intestazioni" -o "$TMP/pagina" "$PROVA"
+URL=$(cat "$TMP/intestazioni" "$TMP/pagina" | tr -d '\r' | grep -oE "https://[^\"' <>]+/portal/[^\"' <>]+" | head -n1)
+if [ -z "$URL" ]; then
+  log "offline ma nessun portale riconosciuto (WiFi giu'? portale cambiato?)"
+  stato "portale non trovato"
+  exit 1
+fi
+BASE=${URL%%/portal/*}/portal
+
+# 2. Pagina di login
+rm -f "$TMP/cookie"
+curl -sk --max-time 30 -A "$UA" -L -c "$TMP/cookie" -b "$TMP/cookie" -o "$TMP/p0.html" "$URL"
+TOKEN=$(campo token "$TMP/p0.html")
+PORTAL=$(campo portal "$TMP/p0.html")
+if [ -z "$TOKEN" ] || ! grep -q 'LoginSubmit.action' "$TMP/p0.html"; then
+  log "pagina di login del portale non riconosciuta: vedi $TMP/p0.html"
+  stato "portale cambiato"
+  exit 1
+fi
+invia "LoginSubmit.action?from=LOGIN" "$TMP/p1.html" \
+  "token=$TOKEN" "portal=$PORTAL" "user.username=$PORTALE_USER" "user.password=$PORTALE_PASS"
+
+# 3. Pagine intermedie con un solo "Continue" (al massimo 5)
+pagina=$TMP/p1.html
+for i in 1 2 3 4 5; do
+  azione=$(grep -oE 'action="(Continue|AupSubmit)\.action\?from=[A-Z_]+"' "$pagina" | head -n1 | cut -d'"' -f2)
+  [ -z "$azione" ] && break
+  case "$azione" in
+    *MAX_DEVICES*) log "il portale ha cancellato il dispositivo registrato piu' vecchio di $PORTALE_USER per fare posto al Pi" ;;
+  esac
+  t=$(campo token "$pagina"); [ -n "$t" ] && TOKEN=$t
+  invia "$azione" "$TMP/p$((i + 1)).html" "token=$TOKEN" "aupAccepted=true"
+  pagina=$TMP/p$((i + 1)).html
+done
+
+# 4. Riautorizzazione, come il JavaScript della pagina Success
+if grep -q "coaUrl: 'DoCoA.action'" "$pagina"; then
+  coa=$(grep -oE "coaType: '[A-Za-z]+'" "$pagina" | cut -d"'" -f2)
+  curl -sk --max-time 40 -A "$UA" -b "$TMP/cookie" -c "$TMP/cookie" -o "$TMP/coa" \
+    -H "X-Requested-With: XMLHttpRequest" \
+    --data-urlencode "token=$TOKEN" --data-urlencode "delayToCoA=0" \
+    --data-urlencode "coaType=${coa:-Reauth}" --data-urlencode "coaSource=GUEST" \
+    --data-urlencode "coaReason=Guest authenticated for network access" \
+    --data-urlencode "waitForCoA=true" "$BASE/DoCoA.action"
+fi
+
+for i in 1 2 3 4 5 6; do
+  if online; then
+    log "login sul portale riuscito"
+    stato "online  login $(date +%H:%M)"
+    exit 0
+  fi
+  sleep 5
+done
+if grep -qiE 'invalid|incorrect|errat' "$TMP/p1.html"; then
+  log "login sul portale rifiutato: credenziali sbagliate? vedi $TMP/p1.html"
+  stato "credenziali rifiutate"
+else
+  log "login sul portale non riuscito: pagine salvate in $TMP"
+  stato "login fallito $(date +%H:%M)"
+fi
+exit 1

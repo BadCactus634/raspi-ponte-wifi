@@ -1,0 +1,5 @@
+# Rete gestita da NetworkManager tramite setup.sh (profili ponte-wifi e ponte-lan):
+# cloud-init non deve configurare nessuna interfaccia, in particolare niente DHCP su eth0.
+network:
+  version: 2
+  renderer: NetworkManager

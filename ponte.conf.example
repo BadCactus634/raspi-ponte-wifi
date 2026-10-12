@@ -1,0 +1,21 @@
+# Configurazione del ponte WiFi -> Ethernet. La legge setup.sh.
+
+# Rete WiFi a cui si collega il Pi
+SSID="NomeRete"
+WIFI_PSK=""                 # vuoto = rete aperta
+
+# MAC da presentare alla rete WiFi (es. quello del cellulare gia' autenticato).
+# Vuoto = MAC vero della scheda del Pi.
+# ATTENZIONE: sul telefono usa il MAC "privato/casuale" che il telefono usa PER
+# QUELLA RETE (Impostazioni WiFi > NomeRete > Indirizzo MAC), non quello hardware.
+MAC_CLONATO=""
+
+# Indirizzo del Pi sulla LAN (lato switch). I dispositivi prendono 10.42.0.x via DHCP.
+LAN_IP="10.42.0.1/24"
+
+# Credenziali del portale (Cisco ISE) per il login automatico.
+# Vuote = niente login automatico: ti autentichi a mano da un PC sullo switch.
+PORTALE_USER=""
+PORTALE_PASS=""
+
+PAESE_WIFI="IT"

@@ -56,8 +56,14 @@ while true; do
     *)       inet="${R}${B}OFFLINE${N} $stato" ;;
   esac
 
-  # LAN: dispositivi visti di recente sullo switch
-  disp=$(ip neigh show dev $LAN 2>/dev/null | grep -cE 'REACHABLE|STALE|DELAY|PROBE')
+  # LAN: dispositivi presenti sullo switch. Le voci STALE il kernel non le butta mai
+  # (sotto gc_thresh1), quindi un dispositivo andato via resterebbe contato per sempre:
+  # un ping fa partire la verifica ARP, e chi non risponde passa a FAILED in pochi secondi.
+  # Solo IPv4, se no un dispositivo con anche l'IPv6 conta due o tre volte.
+  for ip in $(ip -4 neigh show dev $LAN nud stale 2>/dev/null | cut -d' ' -f1); do
+    ping -c1 -W1 -I $LAN "$ip" >/dev/null 2>&1 &
+  done
+  disp=$(ip -4 neigh show dev $LAN 2>/dev/null | grep -cE 'REACHABLE|STALE|DELAY|PROBE')
   link=$(cat /sys/class/net/$LAN/carrier 2>/dev/null)
   if [ "$link" = 1 ]; then
     lan="${V}$(cat /sys/class/net/$LAN/speed 2>/dev/null) Mbit${N}"

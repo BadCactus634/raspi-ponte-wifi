@@ -1,18 +1,22 @@
 #!/bin/bash
 # Pagina di stato del ponte sullo schermino 3,5" (console tty1, 48x16 caratteri).
 # Lo lancia ponte-schermo.service; si aggiorna ogni 2 secondi.
+# Se per SCHERMO_ACCESO_PER secondi non cambia niente (online/offline, WiFi collegato o no,
+# numero di dispositivi) lo schermo diventa nero. La retroilluminazione del pannello e'
+# collegata fissa all'alimentazione, quindi via software non si spegne: si spengono i pixel.
 set -u
 WAN=wlan0
 LAN=eth0
 PASSO=2
 STATO_LOGIN=/run/portale-login/stato
 NON_CONTARE_MAC=""
+SCHERMO_ACCESO_PER=120
 [ -f /etc/ponte/schermo.conf ] && . /etc/ponte/schermo.conf
 
 for f in Uni2-TerminusBold20x10 Lat15-TerminusBold20x10 Uni2-Terminus20x10; do
   [ -f /usr/share/consolefonts/$f.psf.gz ] && setfont /usr/share/consolefonts/$f.psf.gz 2>/dev/null && break
 done
-printf '\e[?25l\e[2J'   # niente cursore, schermo pulito
+printf '\e[13]\e[?25l\e[2J'   # console risvegliata, niente cursore, schermo pulito
 
 V=$'\e[32m'; R=$'\e[31m'; G=$'\e[33m'; A=$'\e[36m'; B=$'\e[1m'; N=$'\e[0m'
 
@@ -33,6 +37,9 @@ quanti() {
 riga() { printf '%s\e[K\n' "$1"; }
 
 rx0=$(byte $WAN rx); tx0=$(byte $WAN tx)
+prima=""        # cosa c'era al giro prima: online/offline, WiFi, dispositivi
+acceso_fino=$((SECONDS + SCHERMO_ACCESO_PER))
+nero=0
 while true; do
   sleep $PASSO
   rx1=$(byte $WAN rx); tx1=$(byte $WAN tx)
@@ -54,8 +61,8 @@ while true; do
   # Internet e login sul portale (lo stato lo scrive portale-login)
   stato=$(cat $STATO_LOGIN 2>/dev/null || echo "in attesa")
   case "$stato" in
-    online*) inet="${V}${B}ONLINE${N} ${stato#online}" ;;
-    *)       inet="${R}${B}OFFLINE${N} $stato" ;;
+    online*) inet="${V}${B}ONLINE${N} ${stato#online}"; in_rete=online ;;
+    *)       inet="${R}${B}OFFLINE${N} $stato"; in_rete=offline ;;
   esac
 
   # LAN: dispositivi presenti sullo switch. Le voci STALE il kernel non le butta mai
@@ -89,6 +96,17 @@ while true; do
     (( t & 0x1 )) && alim="${R}${B}SOTTOTENSIONE ORA${N}" || { (( t & 0x10000 )) && alim="${G}sottotensione passata${N}"; }
   fi
   tcol=$V; [ "${temp:-0}" -ge 70 ] && tcol=$G; [ "${temp:-0}" -ge 80 ] && tcol=$R
+
+  # Si riaccende solo per i cambiamenti che contano; velocita', ora e temperatura no.
+  ora="$in_rete ${ssid:+wifi} $disp"
+  [ "$ora" != "$prima" ] && acceso_fino=$((SECONDS + SCHERMO_ACCESO_PER))
+  prima=$ora
+  if [ "$SCHERMO_ACCESO_PER" -gt 0 ] && [ $SECONDS -ge $acceso_fino ]; then
+    [ $nero = 0 ] && printf '\e[0m\e[2J' > /dev/tty1
+    nero=1
+    continue
+  fi
+  nero=0
 
   {
     printf '\e[H'

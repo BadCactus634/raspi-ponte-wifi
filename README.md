@@ -21,7 +21,10 @@ WiFi con captive portal  )))  wlan0 [Raspberry Pi, NAT] eth0 ---- switch ---- PC
 - **Schermino di stato** su un display SPI da 3,5" (480x320, ILI9486): internet,
   segnale WiFi, IP, velocità di download e upload, traffico totale, dispositivi
   sullo switch, temperatura, RAM, SD, uptime, sottotensione. È uno script bash che
-  scrive sulla console: niente da installare.
+  scrive sulla console: niente da installare. Se per `SCHERMO_ACCESO_PER` secondi
+  (default 120) non cambia niente (online/offline, WiFi perso o ritrovato,
+  dispositivi in più o in meno) lo schermo diventa nero; al primo cambiamento si
+  riaccende. La retroilluminazione del pannello è collegata fissa, quindi resta accesa.
 - **Resistenza ai blackout**: watchdog hardware, log in RAM, aggiornamenti automatici
   spenti e, alla fine, SD in sola lettura (overlay in RAM).
 - **Installazione senza mani**: si prepara la SD dal PC e al primo avvio il Pi si

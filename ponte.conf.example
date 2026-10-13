@@ -17,6 +17,10 @@ LAN_IP="10.42.0.1/24"
 # Serve per uno switch gestito, che prende un indirizzo via DHCP ma non e' un dispositivo.
 NON_CONTARE_MAC=""
 
+# Secondi per cui lo schermino resta acceso dopo un cambiamento (online/offline, WiFi
+# perso o ritrovato, dispositivi in piu' o in meno); poi diventa nero. 0 = sempre acceso.
+SCHERMO_ACCESO_PER=120
+
 # Credenziali del portale (Cisco ISE) per il login automatico.
 # Vuote = niente login automatico: ti autentichi a mano da un PC sullo switch.
 PORTALE_USER=""

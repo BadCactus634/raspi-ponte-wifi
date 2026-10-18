@@ -45,14 +45,46 @@ nmcli -t -f NAME,TYPE con show | while IFS=: read -r nome tipo; do
   [ "$tipo" = 802-3-ethernet ] && [ "$nome" != ponte-lan ] && nmcli con delete "$nome" || true
 done
 
+echo "== VPN WireGuard"
+nmcli con delete wg-ponte >/dev/null 2>&1 || true
+rm -f /etc/NetworkManager/dispatcher.d/91-ponte-vpn
+if [ -n "${VPN_CHIAVE_PRIVATA:-}" ]; then
+  # NetworkManager ha WireGuard di serie: si importa un file in formato wg-quick, niente wireguard-tools.
+  tmp=$(mktemp -d)
+  {
+    printf '[Interface]\nPrivateKey = %s\nAddress = %s\n\n' "$VPN_CHIAVE_PRIVATA" "$VPN_INDIRIZZO"
+    printf '[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = %s\nPersistentKeepalive = 25\n' \
+      "$VPN_SERVER_CHIAVE" "$VPN_SERVER" "$VPN_RETI"
+    if [ -n "${VPN_CHIAVE_CONDIVISA:-}" ]; then printf 'PresharedKey = %s\n' "$VPN_CHIAVE_CONDIVISA"; fi
+  } > "$tmp/wg-ponte.conf"
+  chmod 600 "$tmp/wg-ponte.conf"
+  nmcli con import type wireguard file "$tmp/wg-ponte.conf"
+  rm -rf "$tmp"
+  nmcli con modify wg-ponte connection.autoconnect yes ipv6.method disabled
+  # La tabella nm-shared-eth0 di NetworkManager rifiuta le connessioni nuove verso lo switch
+  # che non nascono dallo switch; NM la ricrea a ogni attivazione, quindi la regola che fa
+  # entrare la VPN va rimessa ogni volta.
+  cat > /etc/NetworkManager/dispatcher.d/91-ponte-vpn <<'EOF'
+#!/bin/sh
+case "$2" in up) ;; *) exit 0 ;; esac
+case "$1" in eth0|wg-ponte) ;; *) exit 0 ;; esac
+/usr/sbin/nft list chain ip nm-shared-eth0 filter_forward 2>/dev/null | grep -q 'iifname "wg-ponte"' && exit 0
+/usr/sbin/nft insert rule ip nm-shared-eth0 filter_forward iifname wg-ponte oifname eth0 accept 2>/dev/null
+exit 0
+EOF
+  chmod 755 /etc/NetworkManager/dispatcher.d/91-ponte-vpn
+fi
+
 echo "== Login automatico sul portale"
 install -m 755 "$QUI/portale-login" /usr/local/sbin/portale-login
 install -d -m 700 /etc/ponte
 umask 077
 printf 'PORTALE_USER=%q\nPORTALE_PASS=%q\n' "$PORTALE_USER" "$PORTALE_PASS" > /etc/ponte/portale.conf
 umask 022
-printf 'NON_CONTARE_MAC=%q\nSCHERMO_ACCESO_PER=%q\n' "${NON_CONTARE_MAC:-}" "${SCHERMO_ACCESO_PER:-120}" \
-  > /etc/ponte/schermo.conf
+vpn_controlli=""; [ -n "${VPN_CHIAVE_PRIVATA:-}" ] && vpn_controlli="${VPN_CONTROLLI:-}"
+printf 'NON_CONTARE_MAC=%q\nSCHERMO_ACCESO_PER=%q\nSCHERMO_SPENTO_DALLE=%q\nSCHERMO_SPENTO_ALLE=%q\nVPN_CONTROLLI=%q\n' \
+  "${NON_CONTARE_MAC:-}" "${SCHERMO_ACCESO_PER:-0}" "${SCHERMO_SPENTO_DALLE:-}" "${SCHERMO_SPENTO_ALLE:-}" \
+  "$vpn_controlli" > /etc/ponte/schermo.conf
 
 cat > /etc/systemd/system/portale-login.service <<'EOF'
 [Unit]

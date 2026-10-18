@@ -1,8 +1,11 @@
 #!/bin/bash
 # Pagina di stato del ponte sullo schermino 3,5" (console tty1, 48x16 caratteri).
 # Lo lancia ponte-schermo.service; si aggiorna ogni 2 secondi.
-# Se per SCHERMO_ACCESO_PER secondi non cambia niente (online/offline, WiFi collegato o no,
-# numero di dispositivi) lo schermo diventa nero. La retroilluminazione del pannello e'
+# Lo schermo diventa nero fra SCHERMO_SPENTO_DALLE e SCHERMO_SPENTO_ALLE e, se
+# SCHERMO_ACCESO_PER e' sopra 0, quando per quei secondi non cambia niente (online/offline,
+# WiFi collegato o no, numero di dispositivi). Con un guasto in corso (le voci in rosso:
+# offline, WiFi o cavo scollegati, VPN KO, sottotensione, CPU a 80 C) resta acceso comunque.
+# La retroilluminazione del pannello e'
 # collegata fissa all'alimentazione, quindi via software non si spegne: si spengono i pixel.
 set -u
 WAN=wlan0
@@ -10,7 +13,11 @@ LAN=eth0
 PASSO=2
 STATO_LOGIN=/run/portale-login/stato
 NON_CONTARE_MAC=""
-SCHERMO_ACCESO_PER=120
+SCHERMO_ACCESO_PER=0
+SCHERMO_SPENTO_DALLE=""
+SCHERMO_SPENTO_ALLE=""
+VPN_CONTROLLI=""     # "server=10.66.0.1 casa=10.66.0.5": nome=indirizzo da pingare
+STATO_VPN=/run/ponte-schermo-vpn
 [ -f /etc/ponte/schermo.conf ] && . /etc/ponte/schermo.conf
 
 for f in Uni2-TerminusBold20x10 Lat15-TerminusBold20x10 Uni2-Terminus20x10; do
@@ -36,12 +43,29 @@ quanti() {
 
 riga() { printf '%s\e[K\n' "$1"; }
 
+# "23:00" -> 2300; la fascia puo' passare la mezzanotte (23:00-07:30).
+notte() {
+  [ -n "$SCHERMO_SPENTO_DALLE" ] && [ -n "$SCHERMO_SPENTO_ALLE" ] || return 1
+  local o=$((10#$(date +%H%M))) d=$((10#${SCHERMO_SPENTO_DALLE/:/})) a=$((10#${SCHERMO_SPENTO_ALLE/:/}))
+  if [ $d -le $a ]; then [ $o -ge $d ] && [ $o -lt $a ]; else [ $o -ge $d ] || [ $o -lt $a ]; fi
+}
+
 rx0=$(byte $WAN rx); tx0=$(byte $WAN tx)
 prima=""        # cosa c'era al giro prima: online/offline, WiFi, dispositivi
 acceso_fino=$((SECONDS + SCHERMO_ACCESO_PER))
 nero=0
+giro=0
+rm -rf $STATO_VPN; mkdir -p $STATO_VPN
 while true; do
   sleep $PASSO
+  # La VPN si prova ogni 30 secondi, in background: un ping senza risposta non ferma lo schermo.
+  if [ -n "$VPN_CONTROLLI" ] && [ $((giro++ % 15)) = 0 ]; then
+    for c in $VPN_CONTROLLI; do
+      { ping -c1 -W5 "${c#*=}" >/dev/null 2>&1 && echo ok || echo no; } > "$STATO_VPN/${c%%=*}.tmp" \
+        && mv "$STATO_VPN/${c%%=*}.tmp" "$STATO_VPN/${c%%=*}" &
+    done
+  fi
+  errore=0   # un guasto tiene acceso lo schermo anche di notte
   rx1=$(byte $WAN rx); tx1=$(byte $WAN tx)
   giu=$(velocita $((rx1 - rx0))); su=$(velocita $((tx1 - tx0)))
   rx0=$rx1; tx0=$tx1
@@ -55,14 +79,14 @@ while true; do
     col=$V; [ $q -lt 50 ] && col=$G; [ $q -lt 25 ] && col=$R
     wifi="${col}${ssid:0:16} ${dbm} dBm ${q}%${N}"
   else
-    wifi="${R}non collegato${N}"
+    wifi="${R}non collegato${N}"; errore=1
   fi
 
   # Internet e login sul portale (lo stato lo scrive portale-login)
   stato=$(cat $STATO_LOGIN 2>/dev/null || echo "in attesa")
   case "$stato" in
     online*) inet="${V}${B}ONLINE${N} ${stato#online}"; in_rete=online ;;
-    *)       inet="${R}${B}OFFLINE${N} $stato"; in_rete=offline ;;
+    *)       inet="${R}${B}OFFLINE${N} $stato"; in_rete=offline; errore=1 ;;
   esac
 
   # LAN: dispositivi presenti sullo switch. Le voci STALE il kernel non le butta mai
@@ -80,8 +104,17 @@ while true; do
   if [ "$link" = 1 ]; then
     lan="${V}$(cat /sys/class/net/$LAN/speed 2>/dev/null) Mbit${N}"
   else
-    lan="${R}cavo scollegato${N}"
+    lan="${R}cavo scollegato${N}"; errore=1
   fi
+
+  vpn=""
+  for c in $VPN_CONTROLLI; do
+    case "$(cat "$STATO_VPN/${c%%=*}" 2>/dev/null)" in
+      ok) vpn+="${c%%=*} ${V}ok${N}  " ;;
+      no) vpn+="${c%%=*} ${R}${B}KO${N}  "; errore=1 ;;
+      *)  vpn+="${c%%=*} ...  " ;;
+    esac
+  done
 
   # Sistema
   temp=$(awk '{printf "%.0f", $1 / 1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
@@ -93,15 +126,18 @@ while true; do
   alim="${V}ok${N}"
   t=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
   if [ -n "$t" ]; then
-    (( t & 0x1 )) && alim="${R}${B}SOTTOTENSIONE ORA${N}" || { (( t & 0x10000 )) && alim="${G}sottotensione passata${N}"; }
+    if (( t & 0x1 )); then alim="${R}${B}SOTTOTENSIONE ORA${N}"; errore=1
+    elif (( t & 0x10000 )); then alim="${G}sottotensione passata${N}"; fi
   fi
-  tcol=$V; [ "${temp:-0}" -ge 70 ] && tcol=$G; [ "${temp:-0}" -ge 80 ] && tcol=$R
+  tcol=$V; [ "${temp:-0}" -ge 70 ] && tcol=$G
+  if [ "${temp:-0}" -ge 80 ]; then tcol=$R; errore=1; fi
 
   # Si riaccende solo per i cambiamenti che contano; velocita', ora e temperatura no.
   ora="$in_rete ${ssid:+wifi} $disp"
   [ "$ora" != "$prima" ] && acceso_fino=$((SECONDS + SCHERMO_ACCESO_PER))
   prima=$ora
-  if [ "$SCHERMO_ACCESO_PER" -gt 0 ] && [ $SECONDS -ge $acceso_fino ]; then
+  # Nero di notte o dopo SCHERMO_ACCESO_PER senza novita', ma mai con un guasto in corso.
+  if [ $errore = 0 ] && { notte || { [ "$SCHERMO_ACCESO_PER" -gt 0 ] && [ $SECONDS -ge $acceso_fino ]; }; }; then
     [ $nero = 0 ] && printf '\e[0m\e[2J' > /dev/tty1
     nero=1
     continue
@@ -115,8 +151,8 @@ while true; do
     riga " Internet  $inet"
     riga " WiFi      $wifi"
     riga " IP        ${ipwan:--}"
-    riga " Download  ${B}$giu${N}"
-    riga " Upload    ${B}$su${N}"
+    riga " Traffico  giu ${B}$giu${N}  su ${B}$su${N}"
+    if [ -n "$VPN_CONTROLLI" ]; then riga " VPN       $vpn"; else riga ""; fi
     riga " Totale    down $(quanti $rx1)  up $(quanti $tx1)"
     riga "${A}------------------------------------------------${N}"
     parola=dispositivi; [ "$disp" = 1 ] && parola=dispositivo

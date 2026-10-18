@@ -19,12 +19,17 @@ WiFi con captive portal  )))  wlan0 [Raspberry Pi, NAT] eth0 ---- switch ---- PC
   volta che il WiFi si riconnette, controlla di essere online e, se non lo è, rifà
   il login come farebbe un browser.
 - **Schermino di stato** su un display SPI da 3,5" (480x320, ILI9486): internet,
-  segnale WiFi, IP, velocità di download e upload, traffico totale, dispositivi
-  sullo switch, temperatura, RAM, SD, uptime, sottotensione. È uno script bash che
-  scrive sulla console: niente da installare. Se per `SCHERMO_ACCESO_PER` secondi
-  (default 120) non cambia niente (online/offline, WiFi perso o ritrovato,
-  dispositivi in più o in meno) lo schermo diventa nero; al primo cambiamento si
-  riaccende. La retroilluminazione del pannello è collegata fissa, quindi resta accesa.
+  segnale WiFi, IP, velocità di download e upload, stato della VPN, traffico totale,
+  dispositivi sullo switch, temperatura, RAM, SD, uptime, sottotensione. È uno script
+  bash che scrive sulla console: niente da installare. È sempre acceso, tranne nella
+  fascia `SCHERMO_SPENTO_DALLE`-`SCHERMO_SPENTO_ALLE` (per esempio 23:00-07:30) in cui
+  diventa nero; con `SCHERMO_ACCESO_PER` sopra 0 si spegne anche dopo quei secondi
+  senza cambiamenti. **Con un guasto in corso resta acceso comunque**: offline, WiFi o
+  cavo scollegati, una VPN che non risponde, sottotensione, CPU a 80 °C (le voci in
+  rosso). La retroilluminazione del pannello è collegata fissa: si spengono i pixel.
+- **VPN WireGuard (facoltativa)**: il Pi si collega a un server WireGuard e da lì si
+  raggiunge lo switch, anche se la rete WiFi non lascia entrare niente da fuori.
+  Vedi [VPN](#vpn).
 - **Resistenza ai blackout**: watchdog hardware, log in RAM, aggiornamenti automatici
   spenti e, alla fine, SD in sola lettura (overlay in RAM).
 - **Installazione senza mani**: si prepara la SD dal PC e al primo avvio il Pi si
@@ -75,7 +80,7 @@ Con un portale diverso (Fortinet, pfSense, UniFi...) l'unica cosa da riscrivere
 | File | Cosa fa |
 |---|---|
 | `setup.sh` | Installa e configura tutto: connessioni NetworkManager, login, schermo, watchdog, log in RAM |
-| `ponte.conf.example` | Configurazione: SSID, credenziali del portale, MAC da clonare, indirizzo LAN |
+| `ponte.conf.example` | Configurazione: SSID, credenziali del portale, MAC da clonare, indirizzo LAN, schermo, VPN |
 | `portale-login` | Login automatico sul captive portal Cisco ISE |
 | `ponte-schermo` | Pagina di stato sullo schermino (tty1) |
 | `primo-avvio/user-data.example` | cloud-init: utente, chiave SSH, fuso orario; lancia `setup.sh` al primo avvio |
@@ -156,12 +161,40 @@ sudo raspi-config nonint do_overlayfs 1 && sudo reboot   # disattiva, per modifi
 Con l'overlay attivo ogni modifica si perde al riavvio: prima di cambiare qualcosa,
 disattivalo e riavvia.
 
+## VPN
+
+Con `VPN_CHIAVE_PRIVATA` compilata in `ponte.conf`, `setup.sh` crea la connessione
+NetworkManager `wg-ponte`. NetworkManager ha WireGuard di serie, quindi
+`wireguard-tools` non serve. Il Pi chiama il server: dal WiFi non deve entrare niente,
+e il keepalive a 25 s tiene aperto il NAT della rete.
+
+- Nel tunnel passano solo `VPN_RETI`, non tutto il traffico: internet resta sul WiFi,
+  e un altro router dietro al ponte con una sua VPN (per esempio verso lo stesso
+  server) esce dal NAT come prima, senza finire dentro questo tunnel.
+- Sul server, il peer del Pi va con `AllowedIPs = <VPN_INDIRIZZO>, 10.42.0.0/24` e una
+  rotta verso 10.42.0.0/24; sul client da cui ti colleghi aggiungi 10.42.0.0/24 agli
+  `AllowedIPs`. Le reti non devono sovrapporsi: 10.42.0.0/24 non va usata altrove nella VPN.
+- La tabella `nm-shared-eth0` che NetworkManager crea per lo switch rifiuta le
+  connessioni nuove che non nascono dallo switch. Lo script
+  `/etc/NetworkManager/dispatcher.d/91-ponte-vpn` ci aggiunge
+  `iifname wg-ponte oifname eth0 accept` a ogni attivazione, perché NM ricrea la
+  tabella ogni volta.
+- `VPN_CONTROLLI` (`nome=indirizzo ...`) elenca gli indirizzi che lo schermino prova
+  ogni 30 s, sulla riga VPN.
+
+Per aggiungerla a un ponte già installato con la SD in sola lettura, senza
+disattivare l'overlay: `sudo mount -o remount,rw /media/root-ro`, poi gli stessi
+passi di `setup.sh` sia in `/` sia sotto `/media/root-ro` (il file
+`/etc/NetworkManager/system-connections/wg-ponte.nmconnection` si copia dopo
+l'import), infine `sudo mount -o remount,ro /media/root-ro`.
+
 ## Comandi utili
 
 Via SSH a `10.42.0.1`, da un PC collegato allo switch:
 
 ```bash
-nmcli con show --active                 # ponte-wifi e ponte-lan attive?
+nmcli con show --active                 # ponte-wifi, ponte-lan e wg-ponte attive?
+cat /run/ponte-schermo-vpn/*            # ultimo esito dei controlli VPN
 journalctl -t portale-login             # esito dei login
 sudo /usr/local/sbin/portale-login      # forza un tentativo adesso
 ls /run/portale-login/                  # pagine del portale dell'ultimo tentativo (p0..p5.html)

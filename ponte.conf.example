@@ -19,7 +19,26 @@ NON_CONTARE_MAC=""
 
 # Secondi per cui lo schermino resta acceso dopo un cambiamento (online/offline, WiFi
 # perso o ritrovato, dispositivi in piu' o in meno); poi diventa nero. 0 = sempre acceso.
-SCHERMO_ACCESO_PER=120
+SCHERMO_ACCESO_PER=0
+
+# Fascia oraria in cui lo schermino e' nero comunque (HH:MM, puo' passare la mezzanotte).
+# Vuote = mai.
+SCHERMO_SPENTO_DALLE="23:00"
+SCHERMO_SPENTO_ALLE="07:30"
+
+# VPN WireGuard (facoltativa): il Pi si collega a un server WireGuard e da li' si
+# raggiunge lo switch. Sul server il peer del Pi va con AllowedIPs = <VPN_INDIRIZZO>, 10.42.0.0/24.
+# Nel tunnel passano solo VPN_RETI, non tutto il traffico. Chiave privata vuota = niente VPN.
+VPN_INDIRIZZO="10.66.0.4/32"
+VPN_CHIAVE_PRIVATA=""       # wg genkey
+VPN_CHIAVE_CONDIVISA=""     # wg genpsk (facoltativa, uguale sul server)
+VPN_SERVER_CHIAVE=""        # chiave pubblica del server
+VPN_SERVER="vpn.example.org:51820"
+VPN_RETI="10.66.0.0/16"
+# Collegamenti da provare ogni 30 s, mostrati sulla riga VPN dello schermino: nome=indirizzo,
+# separati da spazi (al massimo due-tre, la riga e' di 48 caratteri). Gli indirizzi devono
+# stare dentro VPN_RETI.
+VPN_CONTROLLI="server=10.66.0.1"
 
 # Credenziali del portale (Cisco ISE) per il login automatico.
 # Vuote = niente login automatico: ti autentichi a mano da un PC sullo switch.

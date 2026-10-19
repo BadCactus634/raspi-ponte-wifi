@@ -182,11 +182,11 @@ e il keepalive a 25 s tiene aperto il NAT della rete.
 - `VPN_CONTROLLI` (`nome=indirizzo ...`) elenca gli indirizzi che lo schermino prova
   ogni 30 s, sulla riga VPN.
 
-Per aggiungerla a un ponte già installato con la SD in sola lettura, senza
-disattivare l'overlay: `sudo mount -o remount,rw /media/root-ro`, poi gli stessi
-passi di `setup.sh` sia in `/` sia sotto `/media/root-ro` (il file
-`/etc/NetworkManager/system-connections/wg-ponte.nmconnection` si copia dopo
-l'import), infine `sudo mount -o remount,ro /media/root-ro`.
+Per aggiungerla o cambiarla su un ponte già installato con la SD in sola lettura,
+senza disattivare l'overlay e senza riavvio, c'è `strumenti/installa-a-caldo.sh`:
+copia sul Pi, in una cartella, lo script, `ponte.conf`, `ponte-schermo` e `setup.sh`,
+poi `sudo bash installa-a-caldo.sh <cartella>`. Scrive sia in `/` sia sotto
+`/media/root-ro` e alla fine cancella la copia di `ponte.conf`.
 
 ## Comandi utili
 

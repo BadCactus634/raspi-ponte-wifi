@@ -12,6 +12,7 @@ WAN=wlan0
 LAN=eth0
 PASSO=2
 STATO_LOGIN=/run/portale-login/stato
+STATO_GUARDIA=/run/ponte-guardia   # lo scrive ponte-guardia mentre ripara il WiFi
 NON_CONTARE_MAC=""
 SCHERMO_ACCESO_PER=0
 SCHERMO_SPENTO_DALLE=""
@@ -82,8 +83,9 @@ while true; do
     wifi="${R}non collegato${N}"; errore=1
   fi
 
-  # Internet e login sul portale (lo stato lo scrive portale-login)
-  stato=$(cat $STATO_LOGIN 2>/dev/null || echo "in attesa")
+  # Internet e login sul portale (lo stato lo scrive portale-login, ma mentre ponte-guardia
+  # ripara il WiFi conta il suo)
+  stato=$(cat $STATO_GUARDIA 2>/dev/null || cat $STATO_LOGIN 2>/dev/null || echo "in attesa")
   case "$stato" in
     online*) inet="${V}${B}ONLINE${N} ${stato#online}"; in_rete=online ;;
     *)       inet="${R}${B}OFFLINE${N} $stato"; in_rete=offline; errore=1 ;;

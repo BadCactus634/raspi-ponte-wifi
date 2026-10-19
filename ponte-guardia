@@ -1,0 +1,123 @@
+#!/bin/bash
+# Guardia del WiFi: se wlan0 perde la rete e non si riprende da sola, la ripara a gradini.
+# Lo lancia ponte-guardia.service; controlla ogni PASSO secondi.
+#
+# Guasto = wlan0 non associato, senza IPv4, senza gateway, o gateway che non risponde ne' ad
+# ARP ne' al ping. Internet che non va con il gateway raggiungibile NON e' un guasto del Pi
+# (portale, rete a monte): li' non si tocca niente, ci pensa portale-login.
+# Il chip WiFi del Pi 3 (BCM43430, driver brcmfmac) ogni tanto si pianta: NetworkManager
+# continua a riprovare ma non si ricollega piu', e il watchdog non lo vede perche' il
+# sistema e' vivo. Senza questa guardia serviva staccare la corrente.
+#
+# Gradini, in secondi da quando e' iniziato il guasto:
+#   RICOLLEGA_DOPO  nmcli con up della connessione WiFi
+#   DRIVER_DOPO     ricarica del driver brcmfmac
+#   RIAVVIO_DOPO    riavvio, ma solo se il Pi e' acceso da almeno RIAVVIO_MIN_ACCESO secondi:
+#                   se il WiFi della rete e' spento davvero non si riavvia in continuazione,
+#                   si ricomincia dal primo gradino.
+# Prima del riavvio log e stato vanno in /var/log/ponte-guardia.log sulla SD vera (sotto
+# l'overlay), cosi' dopo il riavvio si legge ancora cosa e' successo.
+set -u
+WAN=wlan0
+CONN=ponte-wifi
+PASSO=5
+RICOLLEGA_DOPO=20
+DRIVER_DOPO=60
+RIAVVIO_DOPO=120
+RIAVVIO_MIN_ACCESO=600
+ATTESA_AVVIO=60      # all'accensione NetworkManager ha bisogno del suo tempo
+STATO=/run/ponte-guardia
+SOTTO=/media/root-ro
+LOG_SD=/var/log/ponte-guardia.log
+[ -f /etc/ponte/guardia.conf ] && . /etc/ponte/guardia.conf
+
+log() { logger -t ponte-guardia "$*"; }
+acceso_da() { cut -d. -f1 /proc/uptime; }
+
+# Stampa il motivo ed esce con 0 se c'e' un guasto, 1 se la rete locale va.
+guasto() {
+  iw dev $WAN link 2>/dev/null | grep -q '^Connected to' || { echo "WiFi non collegato"; return 0; }
+  ip -4 -o addr show $WAN 2>/dev/null | grep -q ' inet ' || { echo "nessun IP sul WiFi"; return 0; }
+  local gw
+  gw=$(ip -4 route show default dev $WAN 2>/dev/null | awk '{print $3; exit}')
+  [ -n "$gw" ] || { echo "nessun gateway"; return 0; }
+  arping -q -c2 -w3 -I $WAN "$gw" >/dev/null 2>&1 && return 1
+  ping -q -c1 -W2 -I $WAN "$gw" >/dev/null 2>&1 && return 1
+  echo "gateway $gw muto"
+  return 0
+}
+
+istantanea() {
+  echo "-- iw link";  iw dev $WAN link 2>&1
+  echo "-- ip";       ip -4 addr show $WAN 2>&1; ip -4 route 2>&1
+  echo "-- nmcli";    nmcli -t -f DEVICE,STATE,CONNECTION dev 2>&1
+  echo "-- dmesg";    dmesg 2>/dev/null | grep -iE 'brcm|wlan0|mmc1' | tail -n 15
+}
+
+# Log e stato sulla SD vera, solo prima di un riavvio: e' l'unica scrittura sulla SD.
+salva_su_sd() {
+  mount -o remount,rw $SOTTO 2>/dev/null || { log "non riesco a scrivere su $SOTTO"; return; }
+  {
+    echo "===== $(date '+%F %T') riavvio: $1"
+    journalctl -b -t ponte-guardia -t portale-login -t NetworkManager --since -15min --no-pager -o short 2>&1 | tail -n 150
+    istantanea
+  } >> $SOTTO$LOG_SD
+  # Il file resta piccolo: le ultime 3000 righe
+  tail -n 3000 $SOTTO$LOG_SD > $SOTTO$LOG_SD.tmp && mv $SOTTO$LOG_SD.tmp $SOTTO$LOG_SD
+  sync
+  mount -o remount,ro $SOTTO || log "ATTENZIONE: $SOTTO resta in scrittura"
+}
+
+ricarica_driver() {
+  local m
+  for m in brcmfmac_cyw brcmfmac_wcc brcmfmac_bca brcmfmac; do
+    lsmod | grep -q "^$m " && modprobe -r $m
+  done
+  sleep 2
+  modprobe brcmfmac
+}
+
+while [ "$(acceso_da)" -lt $ATTESA_AVVIO ]; do sleep $PASSO; done
+rm -f $STATO
+inizio=0     # SECONDS all'inizio del guasto, 0 = nessun guasto
+gradino=0    # ultimo gradino fatto per questo guasto
+while true; do
+  sleep $PASSO
+  if ! perche=$(guasto); then
+    if [ $inizio != 0 ]; then
+      log "rete tornata dopo $((SECONDS - inizio)) s (gradino $gradino)"
+      rm -f $STATO
+      inizio=0
+    fi
+    continue
+  fi
+  if [ $inizio = 0 ]; then
+    inizio=$SECONDS; gradino=0
+    log "guasto: $perche"
+  fi
+  durata=$((SECONDS - inizio))
+  if [ $gradino -lt 1 ] && [ $durata -ge $RICOLLEGA_DOPO ]; then
+    gradino=1
+    log "$perche da $durata s: ricollego $CONN"
+    istantanea | logger -t ponte-guardia
+    echo "riparo: ricollego il WiFi" > $STATO
+    timeout 40 nmcli --wait 30 con up $CONN >/dev/null 2>&1
+  elif [ $gradino -lt 2 ] && [ $durata -ge $DRIVER_DOPO ]; then
+    gradino=2
+    log "$perche da $durata s: ricarico il driver WiFi"
+    istantanea | logger -t ponte-guardia
+    echo "riparo: ricarico il driver WiFi" > $STATO
+    ricarica_driver 2>&1 | logger -t ponte-guardia
+  elif [ $gradino -lt 3 ] && [ $durata -ge $RIAVVIO_DOPO ]; then
+    if [ "$(acceso_da)" -ge $RIAVVIO_MIN_ACCESO ]; then
+      gradino=3
+      log "$perche da $durata s: riavvio"
+      echo "riparo: riavvio" > $STATO
+      salva_su_sd "$perche da $durata s"
+      systemctl reboot
+    else
+      log "$perche da $durata s: acceso da poco, niente riavvio, ricomincio dal primo gradino"
+      inizio=$SECONDS; gradino=0
+    fi
+  fi
+done

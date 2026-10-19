@@ -8,7 +8,7 @@ QUI="$(cd "$(dirname "$0")" && pwd)"
 [ "$(id -u)" -eq 0 ] || { echo "Lancialo con sudo"; exit 1; }
 [ -f "$QUI/ponte.conf" ] || { echo "Manca $QUI/ponte.conf: copia ponte.conf.example e compilalo"; exit 1; }
 # Se i file sono passati da Windows possono avere i CRLF
-sed -i 's/\r$//' "$QUI/ponte.conf" "$QUI/portale-login" "$QUI/ponte-schermo"
+sed -i 's/\r$//' "$QUI/ponte.conf" "$QUI/portale-login" "$QUI/ponte-schermo" "$QUI/ponte-guardia"
 . "$QUI/ponte.conf"
 
 echo "== Pacchetti"
@@ -122,6 +122,25 @@ chmod 755 /etc/NetworkManager/dispatcher.d/90-portale-login
 
 systemctl daemon-reload
 systemctl enable portale-login.timer
+
+echo "== Guardia del WiFi"
+# Se il chip WiFi si pianta: ricollega, ricarica il driver, al limite riavvia (vedi ponte-guardia)
+install -m 755 "$QUI/ponte-guardia" /usr/local/sbin/ponte-guardia
+cat > /etc/systemd/system/ponte-guardia.service <<'EOF'
+[Unit]
+Description=Guardia del WiFi: ricollega, ricarica il driver o riavvia se wlan0 perde la rete
+After=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/ponte-guardia
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable ponte-guardia.service
 
 echo "== Schermino 3,5\" (ILI9486 + XPT2046, overlay tft35a)"
 BOOT=/boot/firmware

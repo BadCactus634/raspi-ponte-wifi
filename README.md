@@ -30,6 +30,13 @@ WiFi con captive portal  )))  wlan0 [Raspberry Pi, NAT] eth0 ---- switch ---- PC
 - **VPN WireGuard (facoltativa)**: il Pi si collega a un server WireGuard e da lì si
   raggiunge lo switch, anche se la rete WiFi non lascia entrare niente da fuori.
   Vedi [VPN](#vpn).
+- **Guardia del WiFi** (`ponte-guardia`): il chip WiFi del Pi 3 ogni tanto si pianta,
+  e NetworkManager non riesce più a ricollegarsi finché non si stacca la corrente.
+  Se wlan0 resta senza rete (non collegato, senza IP o col gateway muto) la guardia
+  ricollega il WiFi dopo 20 s, ricarica il driver `brcmfmac` dopo 60 s e riavvia il Pi
+  dopo 120 s, ma solo se è acceso da almeno 10 minuti. Internet che non va col
+  gateway raggiungibile non è un guasto del Pi, e lì la guardia non tocca niente. Prima
+  del riavvio salva i log in `/var/log/ponte-guardia.log`, sulla SD vera.
 - **Resistenza ai blackout**: watchdog hardware, log in RAM, aggiornamenti automatici
   spenti e, alla fine, SD in sola lettura (overlay in RAM).
 - **Installazione senza mani**: si prepara la SD dal PC e al primo avvio il Pi si
@@ -83,6 +90,7 @@ Con un portale diverso (Fortinet, pfSense, UniFi...) l'unica cosa da riscrivere
 | `ponte.conf.example` | Configurazione: SSID, credenziali del portale, MAC da clonare, indirizzo LAN, schermo, VPN |
 | `portale-login` | Login automatico sul captive portal Cisco ISE |
 | `ponte-schermo` | Pagina di stato sullo schermino (tty1) |
+| `ponte-guardia` | Ripara il WiFi quando il chip si pianta: ricollega, ricarica il driver, riavvia |
 | `primo-avvio/user-data.example` | cloud-init: utente, chiave SSH, fuso orario; lancia `setup.sh` al primo avvio |
 | `primo-avvio/network-config` | cloud-init non deve configurare nessuna interfaccia |
 | `strumenti/prepara-img.py` | Mette la configurazione dentro l'immagine `.img`, prima di scriverla |
@@ -111,8 +119,8 @@ Senza questo file `setup.sh` salta lo schermo, e il resto funziona lo stesso.
 
 1. Scarica Raspberry Pi OS Lite 64 bit e decomprimila (`.img`).
 2. Prepara una cartella con dentro `user-data`, `network-config` e una sottocartella
-   `ponte/` con `setup.sh`, `portale-login`, `ponte-schermo`, `ponte.conf` e
-   `tft35a.dtbo`.
+   `ponte/` con `setup.sh`, `portale-login`, `ponte-schermo`, `ponte-guardia`,
+   `ponte.conf` e `tft35a.dtbo`.
 3. Mettila dentro l'immagine e scrivila sulla SD:
 
    ```bash
@@ -138,7 +146,7 @@ SD può leggere), lancia `setup.sh` e riavvia. Il log resta in `/var/log/ponte-s
 ### 2b. Su un Raspberry Pi OS già installato
 
 ```bash
-scp ponte.conf setup.sh portale-login ponte-schermo tft35a.dtbo pi@raspberrypi.local:~/ponte/
+scp ponte.conf setup.sh portale-login ponte-schermo ponte-guardia tft35a.dtbo pi@raspberrypi.local:~/ponte/
 ssh pi@raspberrypi.local 'sudo bash ~/ponte/setup.sh && sudo poweroff'
 ```
 
@@ -196,6 +204,8 @@ Via SSH a `10.42.0.1`, da un PC collegato allo switch:
 nmcli con show --active                 # ponte-wifi, ponte-lan e wg-ponte attive?
 cat /run/ponte-schermo-vpn/*            # ultimo esito dei controlli VPN
 journalctl -t portale-login             # esito dei login
+journalctl -t ponte-guardia             # guasti del WiFi e riparazioni
+cat /var/log/ponte-guardia.log          # log salvati prima dei riavvii della guardia
 sudo /usr/local/sbin/portale-login      # forza un tentativo adesso
 ls /run/portale-login/                  # pagine del portale dell'ultimo tentativo (p0..p5.html)
 sudo cat /dev/fb0 > schermo.raw         # "foto" dello schermino (RGB565, 480x320)

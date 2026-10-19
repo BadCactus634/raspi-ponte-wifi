@@ -29,12 +29,12 @@ SCHERMO_SPENTO_ALLE="07:30"
 # VPN WireGuard (facoltativa): il Pi si collega a un server WireGuard e da li' si
 # raggiunge lo switch. Sul server il peer del Pi va con AllowedIPs = <VPN_INDIRIZZO>, 10.42.0.0/24.
 # Nel tunnel passano solo VPN_RETI, non tutto il traffico. Chiave privata vuota = niente VPN.
-VPN_INDIRIZZO="10.66.0.4/32"
+VPN_INDIRIZZO="10.77.0.3/32"
 VPN_CHIAVE_PRIVATA=""       # wg genkey
 VPN_CHIAVE_CONDIVISA=""     # wg genpsk (facoltativa, uguale sul server)
 VPN_SERVER_CHIAVE=""        # chiave pubblica del server
 VPN_SERVER="vpn.example.org:51820"
-VPN_RETI="10.66.0.0/16"
+VPN_RETI="10.66.0.0/24, 10.77.0.0/24"
 # Collegamenti da provare ogni 30 s, mostrati sulla riga VPN dello schermino: nome=indirizzo,
 # separati da spazi (al massimo due-tre, la riga e' di 48 caratteri). Gli indirizzi devono
 # stare dentro VPN_RETI.

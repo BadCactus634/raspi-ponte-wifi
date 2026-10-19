@@ -62,14 +62,19 @@ if [ -n "${VPN_CHIAVE_PRIVATA:-}" ]; then
   rm -rf "$tmp"
   nmcli con modify wg-ponte connection.autoconnect yes ipv6.method disabled
   # La tabella nm-shared-eth0 di NetworkManager rifiuta le connessioni nuove verso lo switch
-  # che non nascono dallo switch; NM la ricrea a ogni attivazione, quindi la regola che fa
-  # entrare la VPN va rimessa ogni volta.
+  # che non nascono dallo switch; NM la ricrea a ogni attivazione, quindi le regole vanno
+  # rimesse ogni volta: dalla VPN si entra nello switch, ma dallo switch non si apre niente
+  # verso la VPN (altrimenti chi sta sullo switch entrerebbe nella VPN col NAT del ponte).
   cat > /etc/NetworkManager/dispatcher.d/91-ponte-vpn <<'EOF'
 #!/bin/sh
 case "$2" in up) ;; *) exit 0 ;; esac
 case "$1" in eth0|wg-ponte) ;; *) exit 0 ;; esac
-/usr/sbin/nft list chain ip nm-shared-eth0 filter_forward 2>/dev/null | grep -q 'iifname "wg-ponte"' && exit 0
-/usr/sbin/nft insert rule ip nm-shared-eth0 filter_forward iifname wg-ponte oifname eth0 accept 2>/dev/null
+C="ip nm-shared-eth0 filter_forward"
+R=$(/usr/sbin/nft list chain $C 2>/dev/null) || exit 0
+echo "$R" | grep -q 'iifname "wg-ponte" oifname "eth0" accept' ||
+  /usr/sbin/nft insert rule $C iifname wg-ponte oifname eth0 accept
+echo "$R" | grep -q 'oifname "wg-ponte" ct state new drop' ||
+  /usr/sbin/nft insert rule $C iifname eth0 oifname wg-ponte ct state new drop
 exit 0
 EOF
   chmod 755 /etc/NetworkManager/dispatcher.d/91-ponte-vpn

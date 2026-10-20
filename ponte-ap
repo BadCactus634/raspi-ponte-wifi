@@ -1,0 +1,60 @@
+#!/bin/bash
+# Access point sul chip interno (wlap) con hostapd: indirizzo, NAT, firewall, DHCP/DNS e AP.
+# Lo lancia ponte-ap.service; la configurazione la scrive wifi-ap.sh (/etc/ponte/rete.conf e
+# /etc/ponte/hostapd.conf). Uso: ponte-ap avvia | ferma
+#
+# Perche' hostapd e non NetworkManager: NM 1.52 passa a wpa_supplicant "WPA-PSK WPA-PSK-SHA256"
+# anche col PMF spento. Il firmware del BCM43430 trasmette un beacon suo con il solo PSK, mentre
+# il messaggio 3/4 dell'handshake elenca tutti e due: Android 15 vede la differenza e si stacca
+# subito dopo il 3/4, senza dire "password errata". Con hostapd l'AP annuncia solo WPA-PSK, e con
+# wmm_enabled=1 le capability RSN (0x000c) sono le stesse del beacon del firmware.
+#
+# Rete del WiFi: AP_IP (10.42.1.1/24), NAT verso la scheda client (WAN). Come per lo switch: verso
+# la VPN non si aprono connessioni, e dentro al WiFi si entra solo in risposta. Verso lo switch si
+# passa (la regola nella tabella di NetworkManager la mette il dispatcher 92-ponte-ap).
+set -euo pipefail
+. /etc/ponte/rete.conf
+[ -n "${AP:-}" ] || { echo "nessun AP in /etc/ponte/rete.conf"; exit 1; }
+IP=${AP_IP%/*}
+RETE=${IP%.*}.0/${AP_IP#*/}
+PID_DNS=/run/ponte-ap-dnsmasq.pid
+
+ferma() {
+  [ -f $PID_DNS ] && kill "$(cat $PID_DNS)" 2>/dev/null || true
+  rm -f $PID_DNS
+  nft delete table ip ponte-ap 2>/dev/null || true
+  ip addr flush dev "$AP" 2>/dev/null || true
+}
+
+case "${1:-}" in
+avvia)
+  ferma
+  # Il MAC del chip lo usa gia' la chiavetta verso il portale: l'AP ne ha uno suo
+  ip link set "$AP" down
+  ip link set "$AP" address "$AP_MAC"
+  ip link set "$AP" up
+  ip addr add "$AP_IP" dev "$AP"
+  sysctl -qw net.ipv4.ip_forward=1
+  nft -f - <<EOF
+table ip ponte-ap {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr $RETE oifname "$WAN" masquerade
+  }
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    iifname "$AP" oifname "wg-ponte" ct state new drop
+    oifname "$AP" ct state established,related accept
+    oifname "$AP" drop
+  }
+}
+EOF
+  # Il dnsmasq di NetworkManager ascolta solo su 10.42.0.1: questo solo sull'AP
+  dnsmasq --conf-file=/dev/null --bind-interfaces --listen-address="$IP" --except-interface=lo \
+    --dhcp-range="${IP%.*}.10,${IP%.*}.254,12h" --dhcp-option=3,"$IP" --dhcp-option=6,"$IP" \
+    --dhcp-authoritative --dhcp-leasefile=/run/ponte-ap.leases --pid-file=$PID_DNS
+  exec /usr/sbin/hostapd /etc/ponte/hostapd.conf
+  ;;
+ferma) ferma ;;
+*) echo "uso: $0 avvia | ferma"; exit 1 ;;
+esac

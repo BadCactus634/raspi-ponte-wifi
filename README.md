@@ -22,7 +22,8 @@ WiFi con captive portal  )))  wlwan (chiavetta) [Raspberry Pi, NAT] eth0 ---- sw
 ## Cosa fa
 
 - **Ponte WiFi → Ethernet con NAT, DHCP e DNS**, tutto con NetworkManager in
-  modalità `shared`: niente hostapd, regole iptables a mano o dnsmasq separato.
+  modalità `shared`: niente regole iptables a mano o dnsmasq separato. Solo l'access
+  point facoltativo usa hostapd (vedi sotto il perché).
 - **Login automatico sul captive portal** (`portale-login`): ogni 2 minuti, e ogni
   volta che il WiFi si riconnette, controlla di essere online e, se non lo è, rifà
   il login come farebbe un browser.
@@ -104,6 +105,7 @@ Con un portale diverso (Fortinet, pfSense, UniFi...) l'unica cosa da riscrivere
 | `ponte-schermo` | Pagina di stato sullo schermino (tty1) |
 | `ponte-guardia` | Ripara il WiFi quando il chip si pianta: ricollega, ricarica il driver, riavvia |
 | `wifi-ap.sh` | Schede WiFi: chi fa il client e, con una chiavetta, l'access point; dispatcher del portale |
+| `ponte-ap` | Access point con hostapd: indirizzo, NAT, firewall, DHCP/DNS (lo lancia `ponte-ap.service`) |
 | `strumenti/installa-a-caldo.sh` | Aggiorna un ponte acceso con la SD in sola lettura, senza riavvio |
 | `primo-avvio/user-data.example` | cloud-init: utente, chiave SSH, fuso orario; lancia `setup.sh` al primo avvio |
 | `primo-avvio/network-config` | cloud-init non deve configurare nessuna interfaccia |
@@ -134,7 +136,7 @@ Senza questo file `setup.sh` salta lo schermo, e il resto funziona lo stesso.
 1. Scarica Raspberry Pi OS Lite 64 bit e decomprimila (`.img`).
 2. Prepara una cartella con dentro `user-data`, `network-config` e una sottocartella
    `ponte/` con `setup.sh`, `portale-login`, `ponte-schermo`, `ponte-guardia`,
-   `wifi-ap.sh`, `ponte.conf` e `tft35a.dtbo`.
+   `wifi-ap.sh`, `ponte-ap`, `ponte.conf` e `tft35a.dtbo`.
 3. Mettila dentro l'immagine e scrivila sulla SD:
 
    ```bash
@@ -160,7 +162,7 @@ SD può leggere), lancia `setup.sh` e riavvia. Il log resta in `/var/log/ponte-s
 ### 2b. Su un Raspberry Pi OS già installato
 
 ```bash
-scp ponte.conf setup.sh portale-login ponte-schermo ponte-guardia wifi-ap.sh tft35a.dtbo pi@raspberrypi.local:~/ponte/
+scp ponte.conf setup.sh portale-login ponte-schermo ponte-guardia wifi-ap.sh ponte-ap tft35a.dtbo pi@raspberrypi.local:~/ponte/
 ssh pi@raspberrypi.local 'sudo bash ~/ponte/setup.sh && sudo poweroff'
 ```
 
@@ -207,7 +209,7 @@ e il keepalive a 25 s tiene aperto il NAT della rete.
 Per aggiungerla o cambiarla su un ponte già installato con la SD in sola lettura,
 senza disattivare l'overlay e senza riavvio, c'è `strumenti/installa-a-caldo.sh`:
 copia sul Pi, in una cartella, lo script, `ponte.conf`, `ponte-schermo`,
-`ponte-guardia`, `portale-login`, `wifi-ap.sh` e `setup.sh`, poi
+`ponte-guardia`, `portale-login`, `wifi-ap.sh`, `ponte-ap` e `setup.sh`, poi
 `sudo systemd-run --unit installa-a-caldo bash installa-a-caldo.sh <cartella>`
 (meglio ancora da un PC collegato allo switch, dove la SSH non cade quando il WiFi
 si ricollega). Scrive sia in `/` sia sotto `/media/root-ro` e alla fine cancella la
@@ -222,22 +224,32 @@ RTL8188EUS, driver `rtl8xxxu`) fanno solo il client. Quindi i ruoli si scambiano
 la chiavetta si collega alla rete WiFi e il chip interno fa l'access point.
 
 In `ponte.conf`: `WIFI_USB_MAC` (il MAC della chiavetta, `cat /sys/class/net/wlan1/address`),
-`AP_SSID`, `AP_PSK`, `AP_CANALE`, `AP_IP`. `wifi-ap.sh` allora:
+`AP_SSID`, `AP_PSK`, `AP_CANALE`, `AP_IP`. Serve il pacchetto `hostapd` (lo installa
+`setup.sh`; su un ponte con la SD in sola lettura va prima tolto l'overlay). `wifi-ap.sh` allora:
 
 - dà alle schede nomi fissi con due file `.link` per MAC permanente: `wlwan` la
   chiavetta, `wlap` il chip interno, qualunque sia l'ordine in cui compaiono all'avvio;
 - fa presentare la chiavetta alla rete col **MAC del chip interno** (o `MAC_CLONATO`):
   il portale riconosce il Pi già registrato, senza un login nuovo e senza contare un
   dispositivo in più;
-- crea l'access point (WPA2, PMF spento perché il BCM43430 rifiuta le chiavi
-  `WPA-PSK-SHA256`) con un MAC suo, ricavato da quello del chip;
-- con il dispatcher `92-ponte-ap` lascia entrare il WiFi nello switch e gli chiude la
-  VPN, come per lo switch;
+- toglie `wlap` a NetworkManager e scrive `/etc/ponte/hostapd.conf` (WPA2, solo
+  `WPA-PSK`, `wmm_enabled=1`); l'AP ha un MAC suo, ricavato da quello del chip;
+- attiva `ponte-ap.service`, che dà a `wlap` l'indirizzo `AP_IP`, fa il NAT verso la
+  chiavetta, lancia un dnsmasq solo per il WiFi e poi hostapd. La tabella nftables
+  `ponte-ap` chiude al WiFi la VPN e lascia entrare nel WiFi solo le risposte, come per
+  lo switch; il dispatcher `92-ponte-ap` lo fa entrare nello switch;
 - scrive `/etc/ponte/rete.conf`, da cui guardia, schermo e login leggono la scheda client.
 
-Lo schermino mostra sulla riga LAN quanti dispositivi sono sul WiFi, o "AP spento" in
-rosso. La guardia sorveglia solo la scheda client: se si pianta l'AP, NetworkManager
-lo riprova da solo (`autoconnect-retries 0`).
+Perché non NetworkManager, che pure sa fare l'AP: NetworkManager 1.52 passa a
+wpa_supplicant `WPA-PSK WPA-PSK-SHA256` anche col PMF spento. Il firmware del BCM43430
+trasmette un beacon suo con il solo PSK, mentre il messaggio 3/4 dell'handshake elenca
+tutti e due: Android 15 vede la differenza e si stacca subito dopo il 3/4, mostrando la
+rete come "salvata" e non "password errata". Con il PMF acceso, invece, il chip rifiuta
+proprio le chiavi ("key setting validation failed").
+
+Lo schermino conta insieme dispositivi via cavo e sul WiFi (`Connessi 4 dispositivi
+(cavo 3, WiFi 1)`), e mostra "AP spento" in rosso sulla riga LAN. La guardia sorveglia
+solo la scheda client: se si pianta l'AP, `ponte-ap.service` riparte da solo.
 
 Due cose imparate a spese del ponte, che `wifi-ap.sh --subito` evita:
 

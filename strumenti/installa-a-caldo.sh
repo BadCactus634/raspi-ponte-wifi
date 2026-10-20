@@ -3,7 +3,7 @@
 # sola lettura, senza riavvio e senza togliere l'overlay: scrive sia nel sistema vivo sia sotto
 # /media/root-ro.
 # Uso (sul Pi): metti in una cartella questo script, ponte.conf, ponte-schermo, ponte-guardia,
-# portale-login, wifi-ap.sh e setup.sh, poi
+# portale-login, wifi-ap.sh, ponte-ap e setup.sh, poi
 #   sudo systemd-run --unit installa-a-caldo bash installa-a-caldo.sh <cartella>
 # e segui con journalctl -fu installa-a-caldo: l'ultimo passo (wifi-ap.sh --subito) ricollega il
 # WiFi e la SSH cade. Se il ponte non torna online, wifi-ap.sh riavvia prima di toccare la SD.
@@ -26,7 +26,7 @@ finale() {
 }
 trap finale EXIT
 
-sed -i 's/\r$//' ponte.conf ponte-schermo ponte-guardia portale-login wifi-ap.sh setup.sh
+sed -i 's/\r$//' ponte.conf ponte-schermo ponte-guardia portale-login wifi-ap.sh ponte-ap setup.sh
 . ./ponte.conf
 for v in VPN_CHIAVE_PRIVATA VPN_INDIRIZZO VPN_SERVER_CHIAVE VPN_SERVER VPN_RETI; do
   [ -n "${!v:-}" ] || { echo "$v vuota in ponte.conf: questo script e' per un ponte con la VPN"; exit 1; }

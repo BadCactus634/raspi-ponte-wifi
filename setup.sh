@@ -10,15 +10,18 @@ QUI="$(cd "$(dirname "$0")" && pwd)"
 [ "$(id -u)" -eq 0 ] || { echo "Lancialo con sudo"; exit 1; }
 [ -f "$QUI/ponte.conf" ] || { echo "Manca $QUI/ponte.conf: copia ponte.conf.example e compilalo"; exit 1; }
 # Se i file sono passati da Windows possono avere i CRLF
-sed -i 's/\r$//' "$QUI/ponte.conf" "$QUI/portale-login" "$QUI/ponte-schermo" "$QUI/ponte-guardia" "$QUI/wifi-ap.sh"
+sed -i 's/\r$//' "$QUI/ponte.conf" "$QUI/portale-login" "$QUI/ponte-schermo" "$QUI/ponte-guardia" "$QUI/wifi-ap.sh" "$QUI/ponte-ap"
 . "$QUI/ponte.conf"
 
 echo "== Pacchetti"
 # dnsmasq-base serve a NetworkManager per il DHCP/DNS in modalita' "shared", nftables per il NAT.
 # Su Raspberry Pi OS Lite ci sono gia' tutti: apt solo se ne manca qualcuno.
-if ! dpkg -s dnsmasq-base nftables curl iw kbd >/dev/null 2>&1; then
+# hostapd solo con la chiavetta, per l'access point (Debian lo installa gia' mascherato).
+pacchetti="dnsmasq-base nftables curl iw kbd"
+[ -n "${WIFI_USB_MAC:-}" ] && pacchetti+=" hostapd"
+if ! dpkg -s $pacchetti >/dev/null 2>&1; then
   apt-get update
-  apt-get install -y dnsmasq-base nftables curl iw kbd
+  apt-get install -y --no-install-recommends $pacchetti
 fi
 
 echo "== Paese WiFi"

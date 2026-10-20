@@ -1,6 +1,8 @@
 #!/bin/bash
 # Trasforma un Raspberry Pi 3 (Raspberry Pi OS Lite Bookworm/Trixie) in un ponte
 # WiFi -> Ethernet con NAT: wlan0 si collega alla rete WiFi, eth0 serve DHCP allo switch.
+# Con una chiavetta WiFi USB (WIFI_USB_MAC) il client lo fa la chiavetta e il chip interno
+# diventa un access point (vedi wifi-ap.sh).
 # Uso: sudo ./setup.sh   (con ponte.conf accanto)
 set -euo pipefail
 QUI="$(cd "$(dirname "$0")" && pwd)"
@@ -8,7 +10,7 @@ QUI="$(cd "$(dirname "$0")" && pwd)"
 [ "$(id -u)" -eq 0 ] || { echo "Lancialo con sudo"; exit 1; }
 [ -f "$QUI/ponte.conf" ] || { echo "Manca $QUI/ponte.conf: copia ponte.conf.example e compilalo"; exit 1; }
 # Se i file sono passati da Windows possono avere i CRLF
-sed -i 's/\r$//' "$QUI/ponte.conf" "$QUI/portale-login" "$QUI/ponte-schermo" "$QUI/ponte-guardia"
+sed -i 's/\r$//' "$QUI/ponte.conf" "$QUI/portale-login" "$QUI/ponte-schermo" "$QUI/ponte-guardia" "$QUI/wifi-ap.sh"
 . "$QUI/ponte.conf"
 
 echo "== Pacchetti"
@@ -44,6 +46,10 @@ nmcli con add type ethernet ifname eth0 con-name ponte-lan \
 nmcli -t -f NAME,TYPE con show | while IFS=: read -r nome tipo; do
   [ "$tipo" = 802-3-ethernet ] && [ "$nome" != ponte-lan ] && nmcli con delete "$nome" || true
 done
+
+echo "== Schede WiFi (client, e access point se c'e' la chiavetta)"
+# Scrive anche /etc/ponte/rete.conf e il dispatcher 90-portale-login
+bash "$QUI/wifi-ap.sh" "$QUI/ponte.conf"
 
 echo "== VPN WireGuard"
 nmcli con delete wg-ponte >/dev/null 2>&1 || true
@@ -112,13 +118,6 @@ OnUnitActiveSec=2min
 [Install]
 WantedBy=timers.target
 EOF
-
-cat > /etc/NetworkManager/dispatcher.d/90-portale-login <<'EOF'
-#!/bin/sh
-[ "$1" = wlan0 ] && [ "$2" = up ] && systemctl start --no-block portale-login.service
-exit 0
-EOF
-chmod 755 /etc/NetworkManager/dispatcher.d/90-portale-login
 
 systemctl daemon-reload
 systemctl enable portale-login.timer

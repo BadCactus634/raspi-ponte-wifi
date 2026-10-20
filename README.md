@@ -11,6 +11,14 @@ WiFi con captive portal  )))  wlan0 [Raspberry Pi, NAT] eth0 ---- switch ---- PC
                                                        10.42.0.1      DHCP 10.42.0.x
 ```
 
+Con una chiavetta WiFi USB il Pi fa anche da access point:
+
+```
+WiFi con captive portal  )))  wlwan (chiavetta) [Raspberry Pi, NAT] eth0 ---- switch
+                                                                     wlap (chip interno) )))  telefoni, portatili
+                                                                     10.42.1.1   DHCP 10.42.1.x
+```
+
 ## Cosa fa
 
 - **Ponte WiFi → Ethernet con NAT, DHCP e DNS**, tutto con NetworkManager in
@@ -27,13 +35,17 @@ WiFi con captive portal  )))  wlan0 [Raspberry Pi, NAT] eth0 ---- switch ---- PC
   senza cambiamenti. **Con un guasto in corso resta acceso comunque**: offline, WiFi o
   cavo scollegati, una VPN che non risponde, sottotensione, CPU a 80 °C (le voci in
   rosso). La retroilluminazione del pannello è collegata fissa: si spengono i pixel.
+- **Access point (facoltativo)**: con una chiavetta WiFi USB la chiavetta fa il client
+  della rete e il chip interno del Pi trasmette una rete WiFi tua, con NAT e DHCP come
+  lo switch. Vedi [Access point](#access-point-con-una-chiavetta).
 - **VPN WireGuard (facoltativa)**: il Pi si collega a un server WireGuard e da lì si
   raggiunge lo switch, anche se la rete WiFi non lascia entrare niente da fuori.
   Vedi [VPN](#vpn).
 - **Guardia del WiFi** (`ponte-guardia`): il chip WiFi del Pi 3 ogni tanto si pianta,
   e NetworkManager non riesce più a ricollegarsi finché non si stacca la corrente.
-  Se wlan0 resta senza rete (non collegato, senza IP o col gateway muto) la guardia
-  ricollega il WiFi dopo 20 s, ricarica il driver `brcmfmac` dopo 60 s e riavvia il Pi
+  Se la scheda client (wlan0, o la chiavetta) resta senza rete (non collegata, senza IP
+  o col gateway muto) la guardia ricollega il WiFi dopo 20 s, ricarica il driver della
+  scheda (`brcmfmac`, o quello della chiavetta) dopo 60 s e riavvia il Pi
   dopo 120 s, ma solo se è acceso da almeno 10 minuti. Internet che non va col
   gateway raggiungibile non è un guasto del Pi, e lì la guardia non tocca niente. Prima
   del riavvio salva i log in `/var/log/ponte-guardia.log`, sulla SD vera.
@@ -91,6 +103,8 @@ Con un portale diverso (Fortinet, pfSense, UniFi...) l'unica cosa da riscrivere
 | `portale-login` | Login automatico sul captive portal Cisco ISE |
 | `ponte-schermo` | Pagina di stato sullo schermino (tty1) |
 | `ponte-guardia` | Ripara il WiFi quando il chip si pianta: ricollega, ricarica il driver, riavvia |
+| `wifi-ap.sh` | Schede WiFi: chi fa il client e, con una chiavetta, l'access point; dispatcher del portale |
+| `strumenti/installa-a-caldo.sh` | Aggiorna un ponte acceso con la SD in sola lettura, senza riavvio |
 | `primo-avvio/user-data.example` | cloud-init: utente, chiave SSH, fuso orario; lancia `setup.sh` al primo avvio |
 | `primo-avvio/network-config` | cloud-init non deve configurare nessuna interfaccia |
 | `strumenti/prepara-img.py` | Mette la configurazione dentro l'immagine `.img`, prima di scriverla |
@@ -120,7 +134,7 @@ Senza questo file `setup.sh` salta lo schermo, e il resto funziona lo stesso.
 1. Scarica Raspberry Pi OS Lite 64 bit e decomprimila (`.img`).
 2. Prepara una cartella con dentro `user-data`, `network-config` e una sottocartella
    `ponte/` con `setup.sh`, `portale-login`, `ponte-schermo`, `ponte-guardia`,
-   `ponte.conf` e `tft35a.dtbo`.
+   `wifi-ap.sh`, `ponte.conf` e `tft35a.dtbo`.
 3. Mettila dentro l'immagine e scrivila sulla SD:
 
    ```bash
@@ -146,7 +160,7 @@ SD può leggere), lancia `setup.sh` e riavvia. Il log resta in `/var/log/ponte-s
 ### 2b. Su un Raspberry Pi OS già installato
 
 ```bash
-scp ponte.conf setup.sh portale-login ponte-schermo ponte-guardia tft35a.dtbo pi@raspberrypi.local:~/ponte/
+scp ponte.conf setup.sh portale-login ponte-schermo ponte-guardia wifi-ap.sh tft35a.dtbo pi@raspberrypi.local:~/ponte/
 ssh pi@raspberrypi.local 'sudo bash ~/ponte/setup.sh && sudo poweroff'
 ```
 
@@ -192,9 +206,45 @@ e il keepalive a 25 s tiene aperto il NAT della rete.
 
 Per aggiungerla o cambiarla su un ponte già installato con la SD in sola lettura,
 senza disattivare l'overlay e senza riavvio, c'è `strumenti/installa-a-caldo.sh`:
-copia sul Pi, in una cartella, lo script, `ponte.conf`, `ponte-schermo` e `setup.sh`,
-poi `sudo bash installa-a-caldo.sh <cartella>`. Scrive sia in `/` sia sotto
-`/media/root-ro` e alla fine cancella la copia di `ponte.conf`.
+copia sul Pi, in una cartella, lo script, `ponte.conf`, `ponte-schermo`,
+`ponte-guardia`, `portale-login`, `wifi-ap.sh` e `setup.sh`, poi
+`sudo systemd-run --unit installa-a-caldo bash installa-a-caldo.sh <cartella>`
+(meglio ancora da un PC collegato allo switch, dove la SSH non cade quando il WiFi
+si ricollega). Scrive sia in `/` sia sotto `/media/root-ro` e alla fine cancella la
+copia di `ponte.conf`. Per ultime sistema le schede WiFi (`wifi-ap.sh --subito`): se
+il ponte non torna online riavvia prima di toccare la SD, e riparte com'era.
+
+## Access point con una chiavetta
+
+Il chip WiFi del Pi 3 sa fare da access point, ma non insieme al client su un altro
+canale; molte chiavette USB economiche (per esempio la TP-Link TL-WN722N v2/v3,
+RTL8188EUS, driver `rtl8xxxu`) fanno solo il client. Quindi i ruoli si scambiano:
+la chiavetta si collega alla rete WiFi e il chip interno fa l'access point.
+
+In `ponte.conf`: `WIFI_USB_MAC` (il MAC della chiavetta, `cat /sys/class/net/wlan1/address`),
+`AP_SSID`, `AP_PSK`, `AP_CANALE`, `AP_IP`. `wifi-ap.sh` allora:
+
+- dà alle schede nomi fissi con due file `.link` per MAC permanente: `wlwan` la
+  chiavetta, `wlap` il chip interno, qualunque sia l'ordine in cui compaiono all'avvio;
+- fa presentare la chiavetta alla rete col **MAC del chip interno** (o `MAC_CLONATO`):
+  il portale riconosce il Pi già registrato, senza un login nuovo e senza contare un
+  dispositivo in più;
+- crea l'access point (WPA2, PMF spento perché il BCM43430 rifiuta le chiavi
+  `WPA-PSK-SHA256`) con un MAC suo, ricavato da quello del chip;
+- con il dispatcher `92-ponte-ap` lascia entrare il WiFi nello switch e gli chiude la
+  VPN, come per lo switch;
+- scrive `/etc/ponte/rete.conf`, da cui guardia, schermo e login leggono la scheda client.
+
+Lo schermino mostra sulla riga LAN quanti dispositivi sono sul WiFi, o "AP spento" in
+rosso. La guardia sorveglia solo la scheda client: se si pianta l'AP, NetworkManager
+lo riprova da solo (`autoconnect-retries 0`).
+
+Due cose imparate a spese del ponte, che `wifi-ap.sh --subito` evita:
+
+- mai `unbind`/`bind` della chiavetta mentre è collegata: ha bloccato il kernel
+  (risponde al ping, la SSH non arriva al banner, e il watchdog non scatta);
+- dopo aver rinominato le schede, wpa_supplicant le cerca col nome vecchio ("Could not
+  connect to kernel driver"): vanno riavviati lui e NetworkManager.
 
 ## Comandi utili
 

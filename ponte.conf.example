@@ -10,6 +10,17 @@ WIFI_PSK=""                 # vuoto = rete aperta
 # QUELLA RETE (Impostazioni WiFi > NomeRete > Indirizzo MAC), non quello hardware.
 MAC_CLONATO=""
 
+# Chiavetta WiFi USB (facoltativa): fa lei il client della rete WiFi e il chip interno del Pi
+# diventa un access point, con NAT e DHCP come lo switch. La chiavetta si presenta alla rete col
+# MAC del chip interno (o MAC_CLONATO), cosi' il portale riconosce il Pi senza un login nuovo.
+# Va bene qualunque chiavetta che Linux gestisce come client (provata: TP-Link TL-WN722N v2,
+# RTL8188EUS). Vuoto = niente access point, il client e' wlan0.
+WIFI_USB_MAC=""             # MAC permanente della chiavetta: cat /sys/class/net/wlan1/address
+AP_SSID="ponte"
+AP_PSK=""                   # WPA2, almeno 8 caratteri
+AP_CANALE=11                # 2,4 GHz: il chip del Pi 3B non fa i 5 GHz
+AP_IP="10.42.1.1/24"        # i dispositivi WiFi prendono 10.42.1.x e raggiungono lo switch
+
 # Indirizzo del Pi sulla LAN (lato switch). I dispositivi prendono 10.42.0.x via DHCP.
 LAN_IP="10.42.0.1/24"
 

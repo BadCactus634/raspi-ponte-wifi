@@ -1,8 +1,9 @@
 #!/bin/bash
-# Guardia del WiFi: se wlan0 perde la rete e non si riprende da sola, la ripara a gradini.
+# Guardia del WiFi: se la scheda client (WAN, wlan0 o la chiavetta wlwan: /etc/ponte/rete.conf)
+# perde la rete e non si riprende da sola, la ripara a gradini.
 # Lo lancia ponte-guardia.service; controlla ogni PASSO secondi.
 #
-# Guasto = wlan0 non associato, senza IPv4, senza gateway, o gateway che non risponde ne' ad
+# Guasto = WAN non associata, senza IPv4, senza gateway, o gateway che non risponde ne' ad
 # ARP ne' al ping. Internet che non va con il gateway raggiungibile NON e' un guasto del Pi
 # (portale, rete a monte): li' non si tocca niente, ci pensa portale-login.
 # Il chip WiFi del Pi 3 (BCM43430, driver brcmfmac) ogni tanto si pianta: NetworkManager
@@ -11,7 +12,7 @@
 #
 # Gradini, in secondi da quando e' iniziato il guasto:
 #   RICOLLEGA_DOPO  nmcli con up della connessione WiFi
-#   DRIVER_DOPO     ricarica del driver brcmfmac
+#   DRIVER_DOPO     ricarica del driver della scheda WAN (brcmfmac, o quello della chiavetta)
 #   RIAVVIO_DOPO    riavvio, ma solo se il Pi e' acceso da almeno RIAVVIO_MIN_ACCESO secondi:
 #                   se il WiFi della rete e' spento davvero non si riavvia in continuazione,
 #                   si ricomincia dal primo gradino.
@@ -19,6 +20,8 @@
 # l'overlay), cosi' dopo il riavvio si legge ancora cosa e' successo.
 set -u
 WAN=wlan0
+WAN_DRIVER=brcmfmac
+[ -f /etc/ponte/rete.conf ] && . /etc/ponte/rete.conf
 CONN=ponte-wifi
 PASSO=5
 RICOLLEGA_DOPO=20
@@ -51,7 +54,7 @@ istantanea() {
   echo "-- iw link";  iw dev $WAN link 2>&1
   echo "-- ip";       ip -4 addr show $WAN 2>&1; ip -4 route 2>&1
   echo "-- nmcli";    nmcli -t -f DEVICE,STATE,CONNECTION dev 2>&1
-  echo "-- dmesg";    dmesg 2>/dev/null | grep -iE 'brcm|wlan0|mmc1' | tail -n 15
+  echo "-- dmesg";    dmesg 2>/dev/null | grep -iE "brcm|mmc1|$WAN|$WAN_DRIVER" | tail -n 15
 }
 
 # Log e stato sulla SD vera, solo prima di un riavvio: e' l'unica scrittura sulla SD.
@@ -65,11 +68,20 @@ salva_su_sd() {
   # Il file resta piccolo: le ultime 3000 righe
   tail -n 3000 $SOTTO$LOG_SD > $SOTTO$LOG_SD.tmp && mv $SOTTO$LOG_SD.tmp $SOTTO$LOG_SD
   sync
+  # mv sostituisce un file sotto l'overlay: senza drop_caches il remount da' "busy"
+  echo 2 > /proc/sys/vm/drop_caches
   mount -o remount,ro $SOTTO || log "ATTENZIONE: $SOTTO resta in scrittura"
 }
 
 ricarica_driver() {
   local m
+  if [ "$WAN_DRIVER" != brcmfmac ]; then
+    # La chiavetta: il chip interno, se fa l'AP, non si tocca
+    modprobe -r "$WAN_DRIVER"
+    sleep 2
+    modprobe "$WAN_DRIVER"
+    return
+  fi
   for m in brcmfmac_cyw brcmfmac_wcc brcmfmac_bca brcmfmac; do
     lsmod | grep -q "^$m " && modprobe -r $m
   done

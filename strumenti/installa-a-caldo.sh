@@ -1,8 +1,12 @@
 #!/bin/bash
-# Aggiorna schermo e VPN su un ponte gia' in funzione con la SD in sola lettura, senza riavvio e
-# senza togliere l'overlay: scrive sia nel sistema vivo sia sotto /media/root-ro.
-# Uso (sul Pi): metti in una cartella questo script, ponte.conf, ponte-schermo e setup.sh, poi
-#   sudo bash installa-a-caldo.sh <cartella>
+# Aggiorna schermo, guardia, portale, VPN e schede WiFi su un ponte gia' in funzione con la SD in
+# sola lettura, senza riavvio e senza togliere l'overlay: scrive sia nel sistema vivo sia sotto
+# /media/root-ro.
+# Uso (sul Pi): metti in una cartella questo script, ponte.conf, ponte-schermo, ponte-guardia,
+# portale-login, wifi-ap.sh e setup.sh, poi
+#   sudo systemd-run --unit installa-a-caldo bash installa-a-caldo.sh <cartella>
+# e segui con journalctl -fu installa-a-caldo: l'ultimo passo (wifi-ap.sh --subito) ricollega il
+# WiFi e la SSH cade. Se il ponte non torna online, wifi-ap.sh riavvia prima di toccare la SD.
 # Alla fine, anche se qualcosa va storto, cancella la copia di ponte.conf (contiene le chiavi).
 # La VPN nuova si importa con un nome provvisorio: se l'import fallisce quella vecchia resta com'e'.
 set -euo pipefail
@@ -12,15 +16,17 @@ SOTTO=/media/root-ro
 CONN=/etc/NetworkManager/system-connections
 montato=0
 schermo_fermo=0
+# Senza drop_caches l'overlay tiene i file sostituiti sotto di lui e il remount da' "busy"
+sola_lettura() { sync; echo 2 > /proc/sys/vm/drop_caches; mount -o remount,ro $SOTTO; }
 finale() {
   rm -f "$DIR/ponte.conf"
-  [ $schermo_fermo = 1 ] && systemctl start ponte-schermo
-  [ $montato = 1 ] && { mount -o remount,ro $SOTTO || echo "ATTENZIONE: $SOTTO resta in scrittura"; }
+  [ $schermo_fermo = 1 ] && systemctl start ponte-schermo ponte-guardia
+  [ $montato = 1 ] && { sola_lettura || echo "ATTENZIONE: $SOTTO resta in scrittura"; }
   return 0
 }
 trap finale EXIT
 
-sed -i 's/\r$//' ponte.conf ponte-schermo setup.sh
+sed -i 's/\r$//' ponte.conf ponte-schermo ponte-guardia portale-login wifi-ap.sh setup.sh
 . ./ponte.conf
 for v in VPN_CHIAVE_PRIVATA VPN_INDIRIZZO VPN_SERVER_CHIAVE VPN_SERVER VPN_RETI; do
   [ -n "${!v:-}" ] || { echo "$v vuota in ponte.conf: questo script e' per un ponte con la VPN"; exit 1; }
@@ -33,10 +39,14 @@ dispatcher=$(sed -n "/cat > \/etc\/NetworkManager\/dispatcher.d\/91-ponte-vpn <<
 mount -o remount,rw $SOTTO
 montato=1
 
-systemctl stop ponte-schermo
+# Fermi mentre se ne sostituisce il file sotto l'overlay: un file cancellato ancora aperto
+# lascia /media/root-ro "busy" e non torna in sola lettura
+systemctl stop ponte-schermo ponte-guardia
 schermo_fermo=1
 for r in "" $SOTTO; do
   install -m 755 ponte-schermo $r/usr/local/sbin/ponte-schermo
+  install -m 755 ponte-guardia $r/usr/local/sbin/ponte-guardia
+  install -m 755 portale-login $r/usr/local/sbin/portale-login
   printf 'NON_CONTARE_MAC=%q\nSCHERMO_ACCESO_PER=%q\nSCHERMO_SPENTO_DALLE=%q\nSCHERMO_SPENTO_ALLE=%q\nVPN_CONTROLLI=%q\n' \
     "${NON_CONTARE_MAC:-}" "${SCHERMO_ACCESO_PER:-0}" "${SCHERMO_SPENTO_DALLE:-}" "${SCHERMO_SPENTO_ALLE:-}" \
     "${VPN_CONTROLLI:-}" > $r/etc/ponte/schermo.conf
@@ -77,4 +87,10 @@ install -m 600 "$nuovo" "$SOTTO$CONN/$(basename "$nuovo")"
 
 # La regola nella tabella di NM la mette il dispatcher a ogni "up"; ora eth0 e' gia' su.
 /etc/NetworkManager/dispatcher.d/91-ponte-vpn wg-ponte up
+
+# Per ultimo le schede WiFi: ricollega il WiFi e scrive sulla SD solo se torna online
+sola_lettura
+montato=0
+bash wifi-ap.sh "$DIR/ponte.conf" --subito
+systemctl restart ponte-guardia
 echo "installato"

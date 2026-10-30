@@ -49,9 +49,11 @@ table ip ponte-ap {
   }
 }
 EOF
-  # Il dnsmasq di NetworkManager ascolta solo su 10.42.0.1: questo solo sull'AP
+  # Il dnsmasq di NetworkManager ascolta solo su 10.42.0.1: questo solo sull'AP.
+  # Prenotazione fuori dal pool: lo smart switch Tuya della control room (WHD01) sta sempre su .5
   dnsmasq --conf-file=/dev/null --bind-interfaces --listen-address="$IP" --except-interface=lo \
     --dhcp-range="${IP%.*}.10,${IP%.*}.254,12h" --dhcp-option=3,"$IP" --dhcp-option=6,"$IP" \
+    --dhcp-host=d0:32:e7:f9:c3:84,"${IP%.*}.5",tuya-switch \
     --dhcp-authoritative --dhcp-leasefile=/run/ponte-ap.leases --pid-file=$PID_DNS
   exec /usr/sbin/hostapd /etc/ponte/hostapd.conf
   ;;

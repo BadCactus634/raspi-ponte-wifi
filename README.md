@@ -86,6 +86,11 @@ Due dettagli che fanno perdere tempo:
 - il portale risponde **404 a curl**: serve un user-agent da browser;
 - l'hostname del portale non va scritto da nessuna parte, perché lo script lo
   ricava dal redirect.
+- il nome del portale si risolve **solo col DNS passato dal DHCP della rete**: un DNS pubblico
+  forzato nel profilo (`ipv4.dns` con `ignore-auto-dns`) risponde NXDOMAIN, e allora né
+  `portale-login` né i client dell'AP e dello switch (che usano il dnsmasq del Pi, a sua volta
+  inoltrato a quel DNS) riescono ad aprire la pagina. Lascia il DNS automatico sul profilo della
+  rete principale; `portale-login` ha comunque un ripiego col DNS del DHCP per il proprio login.
 
 Dopo il primo login il Pi resta **registrato**: se il WiFi cade e torna, anche dopo
 un blackout, la rete lo riconosce dal MAC ed è subito online. Lo script serve

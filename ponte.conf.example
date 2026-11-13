@@ -4,6 +4,15 @@
 SSID="NomeRete"
 WIFI_PSK=""                 # vuoto = rete aperta
 
+# Reti WiFi di riserva (facoltative), da WIFI2 a WIFI9. Se la rete in uso resta 30 s senza internet
+# e una di queste e' visibile, il Pi passa a quella e ci resta finche' funziona (ponte-reti).
+# Priorita' sotto 100 (la principale). Niente captive portal: il login automatico e' solo per
+# la principale. PSK vuoto = rete aperta. Hotspot del telefono: 2,4 GHz, non nascosto.
+# Su un ponte gia' installato le reti si aggiungono con strumenti/aggiungi-rete.sh.
+#WIFI2_SSID="Hotspot del telefono"
+#WIFI2_PSK="password-della-rete"
+#WIFI2_PRIORITA=50
+
 # MAC da presentare alla rete WiFi (es. quello del cellulare gia' autenticato).
 # Vuoto = MAC vero della scheda del Pi.
 # ATTENZIONE: sul telefono usa il MAC "privato/casuale" che il telefono usa PER

@@ -50,6 +50,15 @@ if online; then
   exit 0
 fi
 
+# Il login vale solo per la rete principale: su una rete di riserva (ponte-reti) non si tocca niente
+WAN=wlan0
+[ -f /etc/ponte/rete.conf ] && . /etc/ponte/rete.conf
+attiva=$(nmcli -g GENERAL.CONNECTION dev show "$WAN" 2>/dev/null | head -n1)
+case "$attiva" in
+  ""|ponte-wifi) ;;
+  *) stato "rete di riserva $attiva"; exit 0 ;;
+esac
+
 if [ -z "$PORTALE_USER" ] || [ -z "$PORTALE_PASS" ]; then
   log "offline e nessuna credenziale in $CONF: serve il login a mano da un PC sulla LAN"
   stato "login a mano"

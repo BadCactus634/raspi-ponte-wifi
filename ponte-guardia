@@ -22,7 +22,7 @@ set -u
 WAN=wlan0
 WAN_DRIVER=brcmfmac
 [ -f /etc/ponte/rete.conf ] && . /etc/ponte/rete.conf
-CONN=ponte-wifi
+CONN=ponte-wifi      # la principale; ricollega() usa la rete in uso, se e' una di riserva
 PASSO=5
 RICOLLEGA_DOPO=20
 DRIVER_DOPO=60
@@ -35,6 +35,13 @@ LOG_SD=/var/log/ponte-guardia.log
 [ -f /etc/ponte/guardia.conf ] && . /etc/ponte/guardia.conf
 
 log() { logger -t ponte-guardia "$*"; }
+# Connessione da ricollegare: quella in uso sulla scheda (anche una rete di riserva scelta da
+# ponte-reti), altrimenti la principale
+conn_attiva() {
+  local c
+  c=$(nmcli -g GENERAL.CONNECTION dev show $WAN 2>/dev/null | head -n1)
+  case "$c" in ponte-wifi|ponte-wifi-*) echo "$c" ;; *) echo "$CONN" ;; esac
+}
 acceso_da() { cut -d. -f1 /proc/uptime; }
 
 # Stampa il motivo ed esce con 0 se c'e' un guasto, 1 se la rete locale va.
@@ -110,10 +117,11 @@ while true; do
   durata=$((SECONDS - inizio))
   if [ $gradino -lt 1 ] && [ $durata -ge $RICOLLEGA_DOPO ]; then
     gradino=1
-    log "$perche da $durata s: ricollego $CONN"
+    conn=$(conn_attiva)
+    log "$perche da $durata s: ricollego $conn"
     istantanea | logger -t ponte-guardia
     echo "riparo: ricollego il WiFi" > $STATO
-    timeout 40 nmcli --wait 30 con up $CONN >/dev/null 2>&1
+    timeout 40 nmcli --wait 30 con up id "$conn" >/dev/null 2>&1
   elif [ $gradino -lt 2 ] && [ $durata -ge $DRIVER_DOPO ]; then
     gradino=2
     log "$perche da $durata s: ricarico il driver WiFi"

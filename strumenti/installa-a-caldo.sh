@@ -3,7 +3,7 @@
 # sola lettura, senza riavvio e senza togliere l'overlay: scrive sia nel sistema vivo sia sotto
 # /media/root-ro.
 # Uso (sul Pi): metti in una cartella questo script, ponte.conf, ponte-schermo, ponte-guardia,
-# portale-login, wifi-ap.sh, ponte-ap e setup.sh, poi
+# portale-login, ponte-reti, wifi-ap.sh, ponte-ap e setup.sh, poi
 #   sudo systemd-run --unit installa-a-caldo bash installa-a-caldo.sh <cartella>
 # e segui con journalctl -fu installa-a-caldo: l'ultimo passo (wifi-ap.sh --subito) ricollega il
 # WiFi e la SSH cade. Se il ponte non torna online, wifi-ap.sh riavvia prima di toccare la SD.
@@ -20,13 +20,13 @@ schermo_fermo=0
 sola_lettura() { sync; echo 2 > /proc/sys/vm/drop_caches; mount -o remount,ro $SOTTO; }
 finale() {
   rm -f "$DIR/ponte.conf"
-  [ $schermo_fermo = 1 ] && systemctl start ponte-schermo ponte-guardia
+  [ $schermo_fermo = 1 ] && { systemctl start ponte-schermo ponte-guardia; systemctl start ponte-reti 2>/dev/null || true; }
   [ $montato = 1 ] && { sola_lettura || echo "ATTENZIONE: $SOTTO resta in scrittura"; }
   return 0
 }
 trap finale EXIT
 
-sed -i 's/\r$//' ponte.conf ponte-schermo ponte-guardia portale-login wifi-ap.sh ponte-ap setup.sh
+sed -i 's/\r$//' ponte.conf ponte-schermo ponte-guardia ponte-reti portale-login wifi-ap.sh ponte-ap setup.sh
 . ./ponte.conf
 for v in VPN_CHIAVE_PRIVATA VPN_INDIRIZZO VPN_SERVER_CHIAVE VPN_SERVER VPN_RETI; do
   [ -n "${!v:-}" ] || { echo "$v vuota in ponte.conf: questo script e' per un ponte con la VPN"; exit 1; }
@@ -36,17 +36,32 @@ done
 dispatcher=$(sed -n "/cat > \/etc\/NetworkManager\/dispatcher.d\/91-ponte-vpn <<'EOF'/,/^EOF/p" setup.sh | sed '1d;$d')
 [ -n "$dispatcher" ] || { echo "dispatcher non trovato in setup.sh"; exit 1; }
 
+# Il ponte-guardia sul Pi puo' avere modifiche locali che il repo non ha (per esempio il controllo
+# di OctoPrint prima del riavvio): non si sovrascrive alla cieca.
+if grep -q octoprint /usr/local/sbin/ponte-guardia && ! grep -q octoprint ponte-guardia; then
+  echo "il ponte-guardia sul Pi ha il controllo OctoPrint che questo non ha: riportalo qui"
+  echo "(insieme al cambio conn_attiva) e rilancia"
+  exit 1
+fi
+# L'unita' di ponte-reti e' quella di setup.sh, presa da li' per non avere due versioni.
+unita_reti=$(sed -n "/cat > \/etc\/systemd\/system\/ponte-reti.service <<'EOF'/,/^EOF/p" setup.sh | sed '1d;$d')
+[ -n "$unita_reti" ] || { echo "unita' ponte-reti non trovata in setup.sh"; exit 1; }
+
 mount -o remount,rw $SOTTO
 montato=1
 
 # Fermi mentre se ne sostituisce il file sotto l'overlay: un file cancellato ancora aperto
 # lascia /media/root-ro "busy" e non torna in sola lettura
-systemctl stop ponte-schermo ponte-guardia
+systemctl stop ponte-schermo ponte-guardia ponte-reti 2>/dev/null || true
 schermo_fermo=1
 for r in "" $SOTTO; do
   install -m 755 ponte-schermo $r/usr/local/sbin/ponte-schermo
   install -m 755 ponte-guardia $r/usr/local/sbin/ponte-guardia
   install -m 755 portale-login $r/usr/local/sbin/portale-login
+  install -m 755 ponte-reti $r/usr/local/sbin/ponte-reti
+  printf '%s\n' "$unita_reti" > $r/etc/systemd/system/ponte-reti.service
+  mkdir -p $r/etc/systemd/system/multi-user.target.wants
+  ln -sf /etc/systemd/system/ponte-reti.service $r/etc/systemd/system/multi-user.target.wants/ponte-reti.service
   printf 'NON_CONTARE_MAC=%q\nSCHERMO_ACCESO_PER=%q\nSCHERMO_SPENTO_DALLE=%q\nSCHERMO_SPENTO_ALLE=%q\nVPN_CONTROLLI=%q\n' \
     "${NON_CONTARE_MAC:-}" "${SCHERMO_ACCESO_PER:-0}" "${SCHERMO_SPENTO_DALLE:-}" "${SCHERMO_SPENTO_ALLE:-}" \
     "${VPN_CONTROLLI:-}" > $r/etc/ponte/schermo.conf
@@ -91,6 +106,9 @@ install -m 600 "$nuovo" "$SOTTO$CONN/$(basename "$nuovo")"
 # Per ultimo le schede WiFi: ricollega il WiFi e scrive sulla SD solo se torna online
 sola_lettura
 montato=0
+systemctl daemon-reload
+# ponte-reti resta fermo mentre il WiFi si ricollega: non deve cambiare rete a meta'
 bash wifi-ap.sh "$DIR/ponte.conf" --subito
 systemctl restart ponte-guardia
+systemctl start ponte-reti
 echo "installato"

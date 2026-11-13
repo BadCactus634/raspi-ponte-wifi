@@ -79,13 +79,23 @@ cat > /etc/NetworkManager/dispatcher.d/90-portale-login <<'EOF'
 #!/bin/sh
 WAN=wlan0
 [ -f /etc/ponte/rete.conf ] && . /etc/ponte/rete.conf
-[ "$1" = "$WAN" ] && [ "$2" = up ] && systemctl start --no-block portale-login.service
+# Il login sul portale vale solo per la rete principale (ponte-wifi), non per quelle di riserva
+[ "$1" = "$WAN" ] && [ "$2" = up ] && [ "${CONNECTION_ID:-ponte-wifi}" = ponte-wifi ] &&
+  systemctl start --no-block portale-login.service
 exit 0
 EOF
 chmod 755 /etc/NetworkManager/dispatcher.d/90-portale-login
 
 nmcli con modify ponte-wifi connection.interface-name $WAN \
   802-11-wireless.cloned-mac-address "${MAC_CLONATO:-$([ -n "$AP" ] && echo $MAC_INTERNO || echo permanent)}"
+# Le reti di riserva (ponte-wifi-*) seguono la stessa scheda client, col MAC vero della scheda
+# (il MAC clonato serve solo al portale della principale)
+nmcli -t -f NAME,TYPE con show | while IFS=: read -r nome tipo; do
+  case "$nome" in ponte-wifi-*)
+    [ "$tipo" = 802-11-wireless ] && nmcli con modify id "$nome" connection.interface-name $WAN \
+      802-11-wireless.cloned-mac-address permanent ;;
+  esac
+done || true
 # Fino al 20/10 l'AP era un profilo di NetworkManager
 nmcli con delete ponte-ap >/dev/null 2>&1 || true
 
@@ -223,15 +233,19 @@ done
 copia /etc/NetworkManager/dispatcher.d/90-portale-login
 copia /etc/ponte/rete.conf
 # Connessione di NetworkManager: sulla SD va il file di adesso, qualunque nome abbia
-uuid=$(nmcli -g connection.uuid con show ponte-wifi)
-copia "$(grep -l "^uuid=$uuid$" $NMC/*.nmconnection | head -1)"
+# (la principale e le reti di riserva ponte-wifi-*)
+for nome in ponte-wifi $(nmcli -t -f NAME,TYPE con show | sed -n 's/^\(ponte-wifi-[^:]*\):802-11-wireless$/\1/p'); do
+  uuid=$(nmcli -g connection.uuid con show id "$nome")
+  f=$(grep -l "^uuid=$uuid$" $NMC/*.nmconnection | head -1)
+  copia "$f"
+done
 
 mount -o remount,rw $SOTTO
 # Senza drop_caches l'overlay tiene i file sostituiti e il remount in sola lettura da' "busy"
 trap 'sync; echo 2 > /proc/sys/vm/drop_caches; mount -o remount,ro $SOTTO || echo "ATTENZIONE: $SOTTO resta in scrittura"' EXIT
 for f in "${togli[@]}"; do rm -f "$SOTTO$f"; done
 for f in $SOTTO$NMC/*.nmconnection; do
-  [ -e "$f" ] && grep -q -E '^id=ponte-(wifi|ap)$' "$f" && rm -f "$f"
+  [ -e "$f" ] && grep -q -E '^id=ponte-(wifi(-[^ ]*)?|ap)$' "$f" && rm -f "$f"
 done
 # File per file: le cartelle della SD tengono i loro permessi (system-connections e' 700)
 (cd $APP && find . -type f -o -type l) | while read -r f; do

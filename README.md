@@ -104,6 +104,9 @@ Con un portale diverso (Fortinet, pfSense, UniFi...) l'unica cosa da riscrivere
 | `portale-login` | Login automatico sul captive portal Cisco ISE |
 | `ponte-schermo` | Pagina di stato sullo schermino (tty1) |
 | `ponte-guardia` | Ripara il WiFi quando il chip si pianta: ricollega, ricarica il driver, riavvia |
+| `ponte-reti` | Passa a un'altra rete WiFi nota se quella in uso resta 30 s senza internet |
+| `strumenti/aggiungi-rete.sh` | Aggiunge una rete WiFi di riserva, anche con la SD in sola lettura |
+| `strumenti/prova-reti.sh` | Prova la logica di `ponte-reti` con `nmcli` finto, senza hardware |
 | `wifi-ap.sh` | Schede WiFi: chi fa il client e, con una chiavetta, l'access point; dispatcher del portale |
 | `ponte-ap` | Access point con hostapd: indirizzo, NAT, firewall, DHCP/DNS (lo lancia `ponte-ap.service`) |
 | `strumenti/installa-a-caldo.sh` | Aggiorna un ponte acceso con la SD in sola lettura, senza riavvio |
@@ -135,7 +138,7 @@ Senza questo file `setup.sh` salta lo schermo, e il resto funziona lo stesso.
 
 1. Scarica Raspberry Pi OS Lite 64 bit e decomprimila (`.img`).
 2. Prepara una cartella con dentro `user-data`, `network-config` e una sottocartella
-   `ponte/` con `setup.sh`, `portale-login`, `ponte-schermo`, `ponte-guardia`,
+   `ponte/` con `setup.sh`, `portale-login`, `ponte-schermo`, `ponte-guardia`, `ponte-reti`,
    `wifi-ap.sh`, `ponte-ap`, `ponte.conf` e `tft35a.dtbo`.
 3. Mettila dentro l'immagine e scrivila sulla SD:
 
@@ -162,7 +165,7 @@ SD può leggere), lancia `setup.sh` e riavvia. Il log resta in `/var/log/ponte-s
 ### 2b. Su un Raspberry Pi OS già installato
 
 ```bash
-scp ponte.conf setup.sh portale-login ponte-schermo ponte-guardia wifi-ap.sh ponte-ap tft35a.dtbo pi@raspberrypi.local:~/ponte/
+scp ponte.conf setup.sh portale-login ponte-schermo ponte-guardia ponte-reti wifi-ap.sh ponte-ap tft35a.dtbo pi@raspberrypi.local:~/ponte/
 ssh pi@raspberrypi.local 'sudo bash ~/ponte/setup.sh && sudo poweroff'
 ```
 
@@ -209,7 +212,7 @@ e il keepalive a 25 s tiene aperto il NAT della rete.
 Per aggiungerla o cambiarla su un ponte già installato con la SD in sola lettura,
 senza disattivare l'overlay e senza riavvio, c'è `strumenti/installa-a-caldo.sh`:
 copia sul Pi, in una cartella, lo script, `ponte.conf`, `ponte-schermo`,
-`ponte-guardia`, `portale-login`, `wifi-ap.sh`, `ponte-ap` e `setup.sh`, poi
+`ponte-guardia`, `portale-login`, `ponte-reti`, `wifi-ap.sh`, `ponte-ap` e `setup.sh`, poi
 `sudo systemd-run --unit installa-a-caldo bash installa-a-caldo.sh <cartella>`
 (meglio ancora da un PC collegato allo switch, dove la SSH non cade quando il WiFi
 si ricollega). Scrive sia in `/` sia sotto `/media/root-ro` e alla fine cancella la
@@ -257,6 +260,61 @@ Due cose imparate a spese del ponte, che `wifi-ap.sh --subito` evita:
   (risponde al ping, la SSH non arriva al banner, e il watchdog non scatta);
 - dopo aver rinominato le schede, wpa_supplicant le cerca col nome vecchio ("Could not
   connect to kernel driver"): vanno riavviati lui e NetworkManager.
+
+## Più reti WiFi
+
+`setup.sh` crea la rete principale (`ponte-wifi`, priorità 100, con il login sul portale).
+Si possono salvare altre reti: l'hotspot di un telefono, un'altra rete di casa. Sono profili
+NetworkManager `ponte-wifi-*`, priorità sotto 100, senza captive portal (il login e il
+dispatcher valgono solo per `ponte-wifi`: sulle altre non parte).
+
+`ponte-reti` (servizio `ponte-reti.service`) cambia rete da solo:
+
+- se la rete in uso resta **30 s senza internet** (o il WiFi non è collegato) e un'altra rete
+  nota è **visibile** (scan con `nmcli dev wifi list --rescan yes`), passa a quella e **ci resta
+  finché funziona**. Non c'è un ritorno periodico alla principale;
+- quando anche quella resta senza internet, o sparisce, prova la successiva tra le note
+  visibili, a rotazione (dalla più alta per priorità, poi si riparte da capo; con due sole reti si torna alla principale);
+- sulla principale, prima di cambiare, parte un login sul portale (a 10 s);
+- niente cicli frenetici: un cambio alla volta, almeno 10 s fra due tentativi, e se nessuna rete
+  ha internet continua a ruotare ogni 30 s con un solo messaggio di log ogni 5 minuti;
+- dopo ogni cambio riparte la VPN `wg-ponte`; NAT e DHCP sullo switch e sull'AP non cambiano
+  (restano agganciati alla scheda client, non alla rete);
+- il log è nel journal (`journalctl -t ponte-reti`) e, al massimo ogni mezz'ora, in
+  `/var/log/ponte-guardia.log` sulla SD vera.
+
+`ponte-guardia` ricollega la rete **in uso** (anche una di riserva), non sempre la principale.
+Le soglie si cambiano con `/etc/ponte/reti.conf` (`SENZA_INTERNET_DOPO`, `PAUSA`, ...).
+
+Hotspot del telefono: il Pi 3B vede solo i **2,4 GHz**. Su Android il punto di accesso deve
+essere a 2,4 GHz (Impostazioni > Hotspot > Banda); su iPhone attiva "Massima compatibilità".
+Il telefono deve essere visibile (non nascosto), con WPA2 (o WPA2/WPA3 misto). Attenzione ai
+dati mobili: se il Pi passa all'hotspot, tutto quello che c'è dietro lo switch consuma i
+dati del telefono.
+
+### Aggiungere una rete
+
+Con una nuova installazione, in `ponte.conf` (`WIFI2_SSID`, `WIFI2_PSK`, `WIFI2_PRIORITA`,
+fino a `WIFI9_`). Su un ponte già in funzione, anche con la SD in sola lettura:
+
+```bash
+scp strumenti/aggiungi-rete.sh pi@10.42.0.1:/tmp/       # da un PC sullo switch
+ssh pi@10.42.0.1
+sudo bash /tmp/aggiungi-rete.sh "Nome della rete" - 50  # '-' = la password si digita, non resta nella history
+nmcli -t -f NAME,TYPE con show | grep wifi                # ponte-wifi e ponte-wifi-<nome>
+```
+
+Lo script crea il profilo sulla scheda client (`/etc/ponte/rete.conf`), lo scrive anche
+sulla SD vera (`mount -o remount,rw /media/root-ro`, copia da `/run`, `sync`, di nuovo in sola
+lettura) e, se il Pi non è collegato, si collega subito. Non stampa la password. Per reti
+nascoste `NASCOSTA=1`, per collegarsi subito anche da online `ATTIVA=1`. Si toglie con
+`sudo nmcli con delete id ponte-wifi-<nome>` (e, con l'overlay, rimuovendo il file in
+`/media/root-ro/etc/NetworkManager/system-connections/` dopo un remount rw).
+
+Su un ponte installato, `ponte-reti` arriva con `strumenti/installa-a-caldo.sh`
+(copia anche `ponte-reti` nella cartella). Se il `ponte-guardia` sul Pi ha modifiche locali
+(per esempio il controllo di OctoPrint) lo script si ferma: vanno riportate nel repo prima.
+`bash strumenti/prova-reti.sh` prova la logica di scelta con `nmcli` finto.
 
 ## Comandi utili
 

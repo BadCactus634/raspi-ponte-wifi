@@ -1,0 +1,202 @@
+#!/bin/bash
+# Reti WiFi di riserva: se la rete a cui e' collegata la scheda client (WAN, wlan0 o la chiavetta
+# wlwan: /etc/ponte/rete.conf) resta senza internet per SENZA_INTERNET_DOPO secondi (30) e un'altra
+# rete nota e' visibile, passa a quella e ci resta finche' funziona. Se anche quella resta senza
+# internet (o sparisce) prova la successiva tra le note visibili, a rotazione; con due sole reti
+# salvate si torna alla prima. Non c'e' un ritorno periodico alla rete principale.
+# Lo lancia ponte-reti.service; le reti note sono i profili NetworkManager "ponte-wifi" (la
+# principale, creata da setup.sh) e "ponte-wifi-*" (strumenti/aggiungi-rete.sh o WIFI2_* ...
+# in ponte.conf), in ordine di priorita' decrescente.
+#
+# Il login sul captive portal (portale-login) vale solo per la principale: sulle altre non parte.
+# Contro i cambi frenetici: un solo cambio alla volta, almeno PAUSA secondi fra un tentativo e
+# l'altro, e il log (journal e /var/log/ponte-guardia.log sulla SD) tiene un solo messaggio ogni
+# LOG_OGNI secondi per lo stesso tipo di evento.
+# Dopo ogni cambio riparte la VPN wg-ponte (si riconnette all'endpoint dalla nuova rete).
+set -u
+WAN=wlan0
+[ -f /etc/ponte/rete.conf ] && . /etc/ponte/rete.conf
+PRINCIPALE=ponte-wifi
+VPN=wg-ponte
+PROVA=http://connectivitycheck.gstatic.com/generate_204
+PASSO=5                  # secondi fra un controllo e l'altro
+SENZA_INTERNET_DOPO=30   # secondi senza internet prima di cambiare rete
+LOGIN_DOPO=10            # sulla principale: dopo tanti secondi parte un login sul portale
+PAUSA=10                 # secondi minimi fra due tentativi di cambio
+ATTESA_ATTIVA=40         # secondi per connettersi e avere internet su una rete nuova
+ATTESA_AVVIO=60          # all'accensione NetworkManager ha bisogno del suo tempo
+LOG_OGNI=300             # un solo messaggio "nessuna rete utile" ogni tanti secondi
+SOTTO=/media/root-ro
+LOG_SD=/var/log/ponte-guardia.log
+SD_OGNI=1800             # sulla SD al massimo ogni tanti secondi (meno scritture)
+IN_ATTESA=/run/ponte-reti.log
+[ -f /etc/ponte/reti.conf ] && . /etc/ponte/reti.conf
+
+ora() { echo "$SECONDS"; }
+log() {
+  logger -t ponte-reti "$*"
+  echo "$(date '+%F %T') ponte-reti: $*" >> "$IN_ATTESA"
+}
+
+# Accoda sulla SD vera (sotto l'overlay) le righe in attesa; al massimo ogni SD_OGNI secondi.
+ultimo_sd=-999999
+scrivi_sd() {
+  [ -s "$IN_ATTESA" ] || return 0
+  [ $(( $(ora) - ultimo_sd )) -ge $SD_OGNI ] || return 0
+  ultimo_sd=$(ora)
+  if mountpoint -q $SOTTO; then
+    mount -o remount,rw $SOTTO 2>/dev/null || return 0
+    cat "$IN_ATTESA" >> $SOTTO$LOG_SD
+    tail -n 3000 $SOTTO$LOG_SD > $SOTTO$LOG_SD.tmp && mv $SOTTO$LOG_SD.tmp $SOTTO$LOG_SD
+    sync
+    echo 2 > /proc/sys/vm/drop_caches
+    mount -o remount,ro $SOTTO || logger -t ponte-reti "ATTENZIONE: $SOTTO resta in scrittura"
+  else
+    cat "$IN_ATTESA" >> $LOG_SD
+  fi
+  : > "$IN_ATTESA"
+}
+
+# Connessione attiva sulla scheda client (vuoto = nessuna)
+corrente() { nmcli -g GENERAL.CONNECTION dev show "$WAN" 2>/dev/null | head -n1; }
+# Collegato a una rete con un indirizzo IPv4?
+con_ip() { ip -4 -o addr show "$WAN" 2>/dev/null | grep -q ' inet '; }
+online() {
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 --interface "$WAN" "$PROVA")" = 204 ]
+}
+
+# Reti note, una per riga: "priorita nome", dalla piu' alta. A parita' di priorita' vale il nome.
+note() {
+  local n
+  nmcli -t -f NAME,TYPE con show 2>/dev/null |
+    awk -F: -v p="$PRINCIPALE" '$NF=="802-11-wireless" && ($1==p || index($1,p "-")==1){print $1}' |
+    while read -r n; do
+      printf '%s %s\n' "$(nmcli -g connection.autoconnect-priority con show id "$n" 2>/dev/null)" "$n"
+    done | sort -k1,1nr -k2,2
+}
+ssid_di() { nmcli -g 802-11-wireless.ssid con show id "$1" 2>/dev/null | head -n1; }
+# SSID visibili (con un nuovo scan), uno per riga; i ':' escapati da nmcli -t tornano normali
+visibili() {
+  nmcli -t -f SSID dev wifi list ifname "$WAN" --rescan yes 2>/dev/null | sed -e 's/\\:/:/g' -e 's/\\\\/\\/g'
+}
+
+riavvia_vpn() {
+  nmcli -t -f NAME con show 2>/dev/null | grep -qx "$VPN" || return 0
+  nmcli con down id "$VPN" >/dev/null 2>&1
+  if timeout 40 nmcli --wait 30 con up id "$VPN" >/dev/null 2>&1; then
+    log "VPN $VPN riavviata"
+  else
+    log "VPN $VPN: non riparte (riprova da sola con autoconnect)"
+  fi
+}
+
+# Come log, ma dopo 3 tentativi falliti di fila al massimo uno ogni LOG_OGNI secondi
+fallimenti=0
+ultimo_log_rip=-999999
+logr() {
+  if [ "$fallimenti" -lt 3 ] || [ $(( $(ora) - ultimo_log_rip )) -ge "$LOG_OGNI" ]; then
+    ultimo_log_rip=$(ora)
+    log "$*"
+  fi
+}
+
+# Collega il profilo $1 e aspetta internet. Su un profilo normale un solo tentativo; sulla
+# principale, se manca internet, prova anche un login sul portale.
+attiva() {
+  timeout $((ATTESA_ATTIVA + 15)) nmcli --wait "$ATTESA_ATTIVA" con up id "$1" ifname "$WAN" >/dev/null 2>&1 || return 1
+  for _ in 1 2 3; do online && return 0; sleep 3; done
+  if [ "$1" = "$PRINCIPALE" ]; then
+    timeout 90 systemctl start portale-login.service >/dev/null 2>&1
+    online && return 0
+  fi
+  return 1
+}
+
+# Stato del ciclo (variabili globali: ciclo gira nella shell principale)
+giu_da=-1             # secondi (ora) in cui e' finito internet, -1 = c'e'
+login_fatto=0
+ultimo_tentativo=-999999
+ultimo_avviso=-999999
+
+# La prossima rete nota, dopo $1, che e' visibile: stampa il nome. Prova in ordine rotante
+# a partire da quella dopo la corrente, e salta quelle non visibili.
+prossima() {
+  local cur=$1 vis lista n fase trovato=0
+  vis=$(visibili)
+  lista=$(note | cut -d' ' -f2-)
+  [ -n "$lista" ] || return 1
+  # prima quelle dopo la corrente, poi quelle prima di lei (la corrente non si riprova)
+  for fase in dopo prima; do
+    while read -r n; do
+      if [ "$fase" = dopo ]; then
+        if [ $trovato = 1 ] && e_visibile "$n" "$vis"; then echo "$n"; return 0; fi
+        [ "$n" = "$cur" ] && trovato=1
+      else
+        [ "$n" = "$cur" ] && break
+        if e_visibile "$n" "$vis"; then echo "$n"; return 0; fi
+      fi
+    done <<< "$lista"
+  done
+  return 1
+}
+# Il profilo $1 e' tra gli SSID visibili $2?
+e_visibile() {
+  local s
+  s=$(ssid_di "$1")
+  [ -n "$s" ] && printf '%s\n' "$2" | grep -qxF -- "$s"
+}
+
+ciclo() {
+  local cur n t altre
+  t=$(ora)
+  altre=$(note | wc -l)
+  [ "$altre" -ge 2 ] || return 0           # senza una seconda rete non c'e' niente da fare
+  cur=$(corrente)
+  if con_ip && online; then
+    if [ "$giu_da" != -1 ]; then log "internet di nuovo su '${cur:-?}' dopo $((t - giu_da)) s"; fi
+    giu_da=-1; login_fatto=0
+    return 0
+  fi
+  if [ "$giu_da" = -1 ]; then
+    giu_da=$t
+    log "nessun internet su '${cur:-nessuna rete}'"
+  fi
+  local durata=$((t - giu_da))
+  # Sulla principale, il portale puo' aver chiuso la sessione: un login prima di cambiare rete
+  if [ "$cur" = "$PRINCIPALE" ] && [ $login_fatto = 0 ] && [ $durata -ge $LOGIN_DOPO ] && con_ip; then
+    login_fatto=1
+    systemctl start --no-block portale-login.service >/dev/null 2>&1
+  fi
+  [ $durata -ge $SENZA_INTERNET_DOPO ] || return 0
+  [ $((t - ultimo_tentativo)) -ge $PAUSA ] || return 0
+  ultimo_tentativo=$t
+  if ! n=$(prossima "$cur"); then
+    if [ $((t - ultimo_avviso)) -ge $LOG_OGNI ]; then
+      log "senza internet da $durata s su '${cur:-nessuna rete}' e nessun'altra rete nota visibile: resto"
+      ultimo_avviso=$t
+    fi
+    return 0
+  fi
+  logr "senza internet da $durata s su '${cur:-nessuna rete}': passo a '$n'"
+  if attiva "$n"; then
+    log "ora su '$n' con internet"
+    giu_da=-1; login_fatto=0; fallimenti=0
+  else
+    # Nessun internet nemmeno li': il conto dei 30 s riparte da ora e si prova la successiva
+    logr "'$n' non ha internet: dopo altri $SENZA_INTERNET_DOPO s provo la successiva"
+    giu_da=$(ora); login_fatto=1; fallimenti=$((fallimenti + 1))
+  fi
+  riavvia_vpn
+  scrivi_sd
+  return 0
+}
+
+# Con PONTE_RETI_TEST=1 si carica solo l'elenco delle funzioni (strumenti/prova-reti.sh)
+[ "${PONTE_RETI_TEST:-}" = 1 ] && return 0
+
+while [ "$(cut -d. -f1 /proc/uptime)" -lt $ATTESA_AVVIO ]; do sleep $PASSO; done
+rm -f "$IN_ATTESA"
+while true; do
+  sleep $PASSO
+  ciclo
+done

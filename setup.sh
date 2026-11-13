@@ -10,7 +10,7 @@ QUI="$(cd "$(dirname "$0")" && pwd)"
 [ "$(id -u)" -eq 0 ] || { echo "Lancialo con sudo"; exit 1; }
 [ -f "$QUI/ponte.conf" ] || { echo "Manca $QUI/ponte.conf: copia ponte.conf.example e compilalo"; exit 1; }
 # Se i file sono passati da Windows possono avere i CRLF
-sed -i 's/\r$//' "$QUI/ponte.conf" "$QUI/portale-login" "$QUI/ponte-schermo" "$QUI/ponte-guardia" "$QUI/wifi-ap.sh" "$QUI/ponte-ap"
+sed -i 's/\r$//' "$QUI/ponte.conf" "$QUI/portale-login" "$QUI/ponte-schermo" "$QUI/ponte-guardia" "$QUI/ponte-reti" "$QUI/wifi-ap.sh" "$QUI/ponte-ap"
 . "$QUI/ponte.conf"
 
 echo "== Pacchetti"
@@ -39,6 +39,26 @@ nmcli con add type wifi ifname wlan0 con-name ponte-wifi ssid "$SSID" \
 if [ -n "$WIFI_PSK" ]; then
   nmcli con modify ponte-wifi wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$WIFI_PSK"
 fi
+
+echo "== Reti WiFi di riserva (WIFI2_*... di ponte.conf)"
+# Solo i profili ponte-wifi-2..9 si rifanno da ponte.conf; quelli aggiunti con
+# strumenti/aggiungi-rete.sh (ponte-wifi-<ssid>) restano dove sono.
+for i in 2 3 4 5 6 7 8 9; do
+  nmcli con delete "ponte-wifi-$i" >/dev/null 2>&1 || true
+  v_ssid=WIFI${i}_SSID; v_psk=WIFI${i}_PSK; v_pri=WIFI${i}_PRIORITA
+  [ -n "${!v_ssid:-}" ] || continue
+  pri=${!v_pri:-50}
+  [ "$pri" -lt 100 ] || { echo "WIFI${i}_PRIORITA deve essere sotto 100"; exit 1; }
+  nmcli con add type wifi ifname wlan0 con-name "ponte-wifi-$i" ssid "${!v_ssid}" \
+    connection.autoconnect yes connection.autoconnect-priority "$pri" \
+    connection.autoconnect-retries 0 \
+    802-11-wireless.powersave 2 \
+    ipv4.method auto ipv6.method disabled
+  if [ -n "${!v_psk:-}" ]; then
+    nmcli con modify "ponte-wifi-$i" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "${!v_psk}"
+  fi
+  echo "rete di riserva $i: ${!v_ssid} (priorita' $pri)"
+done
 
 echo "== LAN verso lo switch (NAT + DHCP)"
 nmcli con delete ponte-lan >/dev/null 2>&1 || true
@@ -143,6 +163,25 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable ponte-guardia.service
+
+echo "== Cambio automatico fra reti WiFi note"
+# Se la rete in uso resta 30 s senza internet e un'altra rete nota e' visibile, passa a quella
+install -m 755 "$QUI/ponte-reti" /usr/local/sbin/ponte-reti
+cat > /etc/systemd/system/ponte-reti.service <<'EOF'
+[Unit]
+Description=Passa a un'altra rete WiFi nota se quella in uso resta senza internet
+After=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/ponte-reti
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable ponte-reti.service
 
 echo "== Schermino 3,5\" (ILI9486 + XPT2046, overlay tft35a)"
 BOOT=/boot/firmware

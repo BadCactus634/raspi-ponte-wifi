@@ -12,6 +12,8 @@
 set -u
 CONF=/etc/ponte/portale.conf
 PROVA=http://connectivitycheck.gstatic.com/generate_204
+MAX_LOGIN=3   # login al massimo in un'ora
+ULTIMA=/var/log/ponte-portale-ultima.html   # ultima pagina del portale scaricata (in RAM col overlay)
 TMP=/run/portale-login
 # Il portale risponde 404 a curl: serve un user-agent da browser
 UA="Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
@@ -36,13 +38,29 @@ campo() {
   grep -oE "<input[^>]*name=\"$1\"[^>]*>" "$2" | grep -oE 'value="[^"]*"' | head -n1 | cut -d'"' -f2
 }
 
+# Indirizzo di $2 chiesto al DNS $1 (UDP; dig e nslookup sul Pi non ci sono); vuoto se non risponde
+risolvi_con() {
+  python3 - "$1" "$2" <<'PY' 2>/dev/null
+import socket, struct, sys
+ns, h = sys.argv[1], sys.argv[2]
+q = struct.pack('>HHHHHH', 0x1234, 0x100, 1, 0, 0, 0) + b''.join(bytes([len(p)]) + p.encode() for p in h.split('.')) + b'\0\0\1\0\1'
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
+try:
+    s.sendto(q, (ns, 53)); d = s.recv(512)
+    if struct.unpack('>H', d[6:8])[0] and d[3] & 15 == 0:
+        print('.'.join(map(str, d[-4:])))
+except Exception:
+    pass
+PY
+}
+
 # POST sul portale: $1 = pagina di destinazione (relativa a /portal/), $2 = file di output, poi i campi
 invia() {
   local dove=$1 out=$2
   shift 2
   local args=()
   for c in "$@"; do args+=(--data-urlencode "$c"); done
-  curl -sk --max-time 30 -A "$UA" -L -b "$TMP/cookie" -c "$TMP/cookie" -o "$out" "${args[@]}" "$BASE/$dove"
+  curl -sk --max-time 30 -A "$UA" -L -b "$TMP/cookie" -c "$TMP/cookie" -o "$out" "${RISOLVI[@]}" "${args[@]}" "$BASE/$dove"
 }
 
 if online; then
@@ -67,26 +85,82 @@ fi
 
 # 1. Dove ci manda il portale (header Location o meta refresh)
 curl -s --max-time 10 -D "$TMP/intestazioni" -o "$TMP/pagina" "$PROVA"
-URL=$(cat "$TMP/intestazioni" "$TMP/pagina" | tr -d '\r' | grep -oE "https://[^\"' <>]+/portal/[^\"' <>]+" | head -n1)
+URL=$(cat "$TMP/intestazioni" "$TMP/pagina" 2>/dev/null | tr -d '\r' | grep -oE "https://[^\"' <>]+/portal/[^\"' <>]+" | head -n1)
 if [ -z "$URL" ]; then
   log "offline ma nessun portale riconosciuto (WiFi giu'? portale cambiato?)"
   stato "portale non trovato"
   exit 1
 fi
 BASE=${URL%%/portal/*}/portal
+HOST=${BASE#https://}; HOST=${HOST%%/*}; PORTA=443
+case "$HOST" in *:*) PORTA=${HOST##*:}; HOST=${HOST%%:*} ;; esac
+
+# Il portale e' raggiungibile solo col DNS della rete: dietro il portale i DNS pubblici (1.1.1.1 del
+# profilo) rispondono NXDOMAIN, e senza risolvere il nome curl non scarica niente. Se il nome non si
+# risolve col DNS di sistema, lo si chiede ai DNS passati dal DHCP.
+RISOLVI=()
+if ! getent hosts "$HOST" >/dev/null 2>&1; then
+  # appena connessi il DNS della rete puo' tardare: fino a 3 giri
+  for giro in 1 2 3; do
+    for ns in $(nmcli -g DHCP4.OPTION dev show "$WAN" 2>/dev/null | grep -oE 'domain_name_servers = [0-9. ]+' | head -n1 | cut -d= -f2); do
+      ip=$(risolvi_con "$ns" "$HOST")
+      if [ -n "$ip" ]; then RISOLVI=(--resolve "$HOST:$PORTA:$ip"); break 2; fi
+    done
+    sleep 3
+  done
+  if [ ${#RISOLVI[@]} -eq 0 ]; then
+    log "il nome del portale non si risolve ne' col DNS di sistema ne' con quello del DHCP: rete senza DNS?"
+    stato "portale: DNS non risponde"
+    exit 1
+  fi
+fi
 
 # 2. Pagina di login
-rm -f "$TMP/cookie"
-curl -sk --max-time 30 -A "$UA" -L -c "$TMP/cookie" -b "$TMP/cookie" -o "$TMP/p0.html" "$URL"
+rm -f "$TMP/cookie" "$TMP/p0.html"
+curl -sk --max-time 30 -A "$UA" -L "${RISOLVI[@]}" -c "$TMP/cookie" -b "$TMP/cookie" -o "$TMP/p0.html" "$URL"
+rc=$?
+if [ $rc -ne 0 ] || [ ! -s "$TMP/p0.html" ]; then
+  log "pagina del portale non scaricata (curl esce con $rc): portale irraggiungibile o non risponde"
+  stato "portale irraggiungibile"
+  exit 1
+fi
+cp -f "$TMP/p0.html" "$ULTIMA" 2>/dev/null
+# Il modulo di login: action LoginSubmit (Cisco ISE) e un campo password
+ACTION=$(grep -oE 'action="[^"]*LoginSubmit[^"]*"' "$TMP/p0.html" | head -n1 | cut -d'"' -f2)
 TOKEN=$(campo token "$TMP/p0.html")
 PORTAL=$(campo portal "$TMP/p0.html")
-if [ -z "$TOKEN" ] || ! grep -q 'LoginSubmit.action' "$TMP/p0.html"; then
-  log "pagina di login del portale non riconosciuta: vedi $TMP/p0.html"
+if [ -z "$ACTION" ] || ! grep -qiE 'type="password"' "$TMP/p0.html"; then
+  if grep -qiE 'type="password"' "$TMP/p0.html"; then
+    log "la pagina ha un campo password ma non il modulo LoginSubmit (portale cambiato): salvata in $ULTIMA"
+  else
+    log "la pagina scaricata non e' una pagina di login (nessun campo password, $(wc -c < "$TMP/p0.html") byte): salvata in $ULTIMA"
+  fi
   stato "portale cambiato"
   exit 1
 fi
-invia "LoginSubmit.action?from=LOGIN" "$TMP/p1.html" \
-  "token=$TOKEN" "portal=$PORTAL" "user.username=$PORTALE_USER" "user.password=$PORTALE_PASS"
+[ -z "$TOKEN" ] && log "attenzione: nella pagina di login non c'e' il campo token, provo senza"
+# Nomi dei campi: user.username/user.password (ISE) o username/password
+CU=user.username; grep -q 'name="user.username"' "$TMP/p0.html" || { grep -q 'name="username"' "$TMP/p0.html" && CU=username; }
+CP=user.password; grep -q 'name="user.password"' "$TMP/p0.html" || { grep -q 'name="password"' "$TMP/p0.html" && CP=password; }
+
+# Limite ai tentativi, per non far bloccare l'account: al massimo MAX_LOGIN login in un'ora, e dopo
+# un rifiuto delle credenziali non si riprova finche' non cambia $CONF (o passa un'ora).
+adesso=$(date +%s)
+if [ -f "$TMP/rifiutato" ] && [ "$(cat "$TMP/rifiutato")" = "$(stat -c %Y "$CONF" 2>/dev/null)" ] \
+   && [ $(( adesso - $(stat -c %Y "$TMP/rifiutato") )) -lt 3600 ]; then
+  stato "credenziali rifiutate"
+  exit 1
+fi
+touch "$TMP/tentativi"
+awk -v t=$((adesso - 3600)) '$1 > t' "$TMP/tentativi" > "$TMP/tentativi.n"; mv "$TMP/tentativi.n" "$TMP/tentativi"
+if [ "$(wc -l < "$TMP/tentativi")" -ge "$MAX_LOGIN" ]; then
+  log "gia' $MAX_LOGIN login nell'ultima ora senza internet: mi fermo per non far bloccare l'account"
+  stato "troppi login, attendo"
+  exit 1
+fi
+echo "$adesso" >> "$TMP/tentativi"
+invia "$ACTION" "$TMP/p1.html" \
+  "token=$TOKEN" "portal=$PORTAL" "$CU=$PORTALE_USER" "$CP=$PORTALE_PASS"
 
 # 3. Pagine intermedie con un solo "Continue" (al massimo 5)
 pagina=$TMP/p1.html
@@ -104,7 +178,7 @@ done
 # 4. Riautorizzazione, come il JavaScript della pagina Success
 if grep -q "coaUrl: 'DoCoA.action'" "$pagina"; then
   coa=$(grep -oE "coaType: '[A-Za-z]+'" "$pagina" | cut -d"'" -f2)
-  curl -sk --max-time 40 -A "$UA" -b "$TMP/cookie" -c "$TMP/cookie" -o "$TMP/coa" \
+  curl -sk --max-time 40 -A "$UA" -b "$TMP/cookie" -c "$TMP/cookie" -o "$TMP/coa" "${RISOLVI[@]}" \
     -H "X-Requested-With: XMLHttpRequest" \
     --data-urlencode "token=$TOKEN" --data-urlencode "delayToCoA=0" \
     --data-urlencode "coaType=${coa:-Reauth}" --data-urlencode "coaSource=GUEST" \
@@ -122,9 +196,12 @@ for i in 1 2 3 4 5 6; do
 done
 if grep -qiE 'invalid|incorrect|errat' "$TMP/p1.html"; then
   log "login sul portale rifiutato: credenziali sbagliate? vedi $TMP/p1.html"
+  cp -f "$TMP/p1.html" "$ULTIMA" 2>/dev/null
+  stat -c %Y "$CONF" > "$TMP/rifiutato"
   stato "credenziali rifiutate"
 else
-  log "login sul portale non riuscito: pagine salvate in $TMP"
+  log "login sul portale non riuscito: pagine salvate in $TMP, l'ultima anche in $ULTIMA"
+  cp -f "$pagina" "$ULTIMA" 2>/dev/null
   stato "login fallito $(date +%H:%M)"
 fi
 exit 1

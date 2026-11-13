@@ -32,6 +32,7 @@ ATTESA_AVVIO=60      # all'accensione NetworkManager ha bisogno del suo tempo
 STATO=/run/ponte-guardia
 SOTTO=/media/root-ro
 LOG_SD=/var/log/ponte-guardia.log
+STAMPA=/run/octoprint-stampa/in-corso   # lo crea OctoPrint (servizio octoprint) mentre stampa
 [ -f /etc/ponte/guardia.conf ] && . /etc/ponte/guardia.conf
 
 log() { logger -t ponte-guardia "$*"; }
@@ -100,13 +101,14 @@ while [ "$(acceso_da)" -lt $ATTESA_AVVIO ]; do sleep $PASSO; done
 rm -f $STATO
 inizio=0     # SECONDS all'inizio del guasto, 0 = nessun guasto
 gradino=0    # ultimo gradino fatto per questo guasto
+stampa_avvisata=0
 while true; do
   sleep $PASSO
   if ! perche=$(guasto); then
     if [ $inizio != 0 ]; then
       log "rete tornata dopo $((SECONDS - inizio)) s (gradino $gradino)"
       rm -f $STATO
-      inizio=0
+      inizio=0; stampa_avvisata=0
     fi
     continue
   fi
@@ -129,7 +131,14 @@ while true; do
     echo "riparo: ricarico il driver WiFi" > $STATO
     ricarica_driver 2>&1 | logger -t ponte-guardia
   elif [ $gradino -lt 3 ] && [ $durata -ge $RIAVVIO_DOPO ]; then
-    if [ "$(acceso_da)" -ge $RIAVVIO_MIN_ACCESO ]; then
+    if [ -e "$STAMPA" ]; then
+      # OctoPrint sta stampando: un riavvio la rovinerebbe. Si aspetta la fine; se il guasto
+      # dura ancora, il riavvio scatta al giro dopo.
+      if [ $stampa_avvisata = 0 ]; then
+        log "$perche da $durata s: stampa in corso, rimando il riavvio"
+        stampa_avvisata=1
+      fi
+    elif [ "$(acceso_da)" -ge $RIAVVIO_MIN_ACCESO ]; then
       gradino=3
       log "$perche da $durata s: riavvio"
       echo "riparo: riavvio" > $STATO

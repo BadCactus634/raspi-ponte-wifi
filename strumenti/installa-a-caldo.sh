@@ -59,6 +59,10 @@ for r in "" $SOTTO; do
   install -m 755 ponte-guardia $r/usr/local/sbin/ponte-guardia
   install -m 755 portale-login $r/usr/local/sbin/portale-login
   install -m 755 ponte-reti $r/usr/local/sbin/ponte-reti
+  printf 'SEGNALE_MIN=%q
+SEGNALE_DOPO=%q
+SEGNALE_MARGINE=%q
+'     "${SEGNALE_MIN:-60}" "${SEGNALE_DOPO:-20}" "${SEGNALE_MARGINE:-15}" > $r/etc/ponte/reti.conf
   printf '%s\n' "$unita_reti" > $r/etc/systemd/system/ponte-reti.service
   mkdir -p $r/etc/systemd/system/multi-user.target.wants
   ln -sf /etc/systemd/system/ponte-reti.service $r/etc/systemd/system/multi-user.target.wants/ponte-reti.service

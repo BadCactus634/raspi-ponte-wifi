@@ -12,6 +12,11 @@
 # Contro i cambi frenetici: un solo cambio alla volta, almeno PAUSA secondi fra un tentativo e
 # l'altro, e il log (journal e /var/log/ponte-guardia.log sulla SD) tiene un solo messaggio ogni
 # LOG_OGNI secondi per lo stesso tipo di evento.
+# Segnale debole: se il segnale della rete in uso resta sotto SEGNALE_MIN (% di nmcli) per
+# SEGNALE_DOPO secondi e un altro access point noto (anche della stessa rete: il Pi non fa
+# roaming da solo) ha un segnale sopra la soglia e di almeno SEGNALE_MARGINE punti migliore,
+# passa a quello. Con un solo access point visibile non cambia niente, e dopo un cambio ne
+# passano almeno PAUSA_SEGNALE secondi: resta li' finche' il segnale e' buono e c'e' internet.
 # Dopo ogni cambio riparte la VPN wg-ponte (si riconnette all'endpoint dalla nuova rete).
 set -u
 WAN=wlan0
@@ -25,7 +30,11 @@ LOGIN_DOPO=10            # sulla principale: dopo tanti secondi parte un login s
 PAUSA=10                 # secondi minimi fra due tentativi di cambio
 ATTESA_ATTIVA=40         # secondi per connettersi e avere internet su una rete nuova
 ATTESA_AVVIO=60          # all'accensione NetworkManager ha bisogno del suo tempo
-LOG_OGNI=300             # un solo messaggio "nessuna rete utile" ogni tanti secondi
+SEGNALE_MIN=60           # % nmcli sotto cui il segnale e' debole (60 = circa -70 dBm; 50 = -75; 30 = -85)
+SEGNALE_DOPO=20          # secondi di segnale debole prima di cercare di meglio
+SEGNALE_MARGINE=15       # punti in piu' richiesti all'altro access point
+PAUSA_SEGNALE=60         # secondi minimi fra due ricerche/cambi per segnale
+LOG_OGNI=300            # un solo messaggio "nessuna rete utile" ogni tanti secondi
 SOTTO=/media/root-ro
 LOG_SD=/var/log/ponte-guardia.log
 SD_OGNI=1800             # sulla SD al massimo ogni tanti secondi (meno scritture)
@@ -75,9 +84,48 @@ note() {
     done | sort -k1,1nr -k2,2
 }
 ssid_di() { nmcli -g 802-11-wireless.ssid con show id "$1" 2>/dev/null | head -n1; }
-# SSID visibili (con un nuovo scan), uno per riga; i ':' escapati da nmcli -t tornano normali
-visibili() {
-  nmcli -t -f SSID dev wifi list ifname "$WAN" --rescan yes 2>/dev/null | sed -e 's/\\:/:/g' -e 's/\\\\/\\/g'
+# Access point visibili (con un nuovo scan): "in-uso<TAB>segnale<TAB>ssid", uno per riga (una
+# rete con piu' access point compare piu' volte). In-uso e' "*" per quello collegato. I ':' e
+# i '\' dell'SSID, escapati da nmcli -t, tornano normali.
+scansione() {
+  nmcli -t -f IN-USE,SIGNAL,SSID dev wifi list ifname "$WAN" --rescan yes 2>/dev/null | awk '{
+    i = index($0, ":"); u = substr($0, 1, i - 1); r = substr($0, i + 1)
+    j = index(r, ":"); sig = substr(r, 1, j - 1); ssid = substr(r, j + 1)
+    gsub(/\\:/, ":", ssid); gsub(/\\\\/, "\\", ssid)
+    printf "%s\t%s\t%s\n", u, sig, ssid }'
+}
+# SSID visibili, uno per riga
+visibili() { scansione | cut -f3; }
+
+# Segnale in % (scala nmcli: 2 * (dBm + 100)) dell'access point in uso; vuoto se non si sa.
+# Senza un nuovo scan: iw (quando c'e') o l'ultimo scan di NetworkManager.
+segnale_corrente() {
+  local dbm s
+  dbm=$({ iw dev "$WAN" link || /usr/sbin/iw dev "$WAN" link; } 2>/dev/null | sed -n 's/.*signal: \(-[0-9]*\) dBm.*/\1/p' | head -n1)
+  if [ -n "$dbm" ]; then
+    s=$((2 * (dbm + 100)))
+    [ $s -gt 100 ] && s=100
+    [ $s -lt 0 ] && s=0
+    echo $s
+    return 0
+  fi
+  nmcli -t -f IN-USE,SIGNAL dev wifi list ifname "$WAN" 2>/dev/null | sed -n 's/^\*:\([0-9]*\)$/\1/p' | head -n1
+}
+
+# Il miglior access point per segnale tra le reti note, diverso da quello in uso. $1 = profilo in
+# uso, $2 = la scansione. Stampa "segnale profilo" (vuoto se nessuno). Per il profilo in uso
+# contano solo gli altri access point della stessa rete.
+miglior_ap() {
+  local cur=$1 scan=$2 n s riga best=-1 bn="" v
+  while read -r n; do
+    s=$(ssid_di "$n")
+    [ -n "$s" ] || continue
+    v=$(printf '%s\n' "$scan" | awk -F'\t' -v s="$s" -v cur="$([ "$n" = "$cur" ] && echo 1 || echo 0)" \
+      '$3 == s && !(cur == 1 && $1 == "*") && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }')
+    if [ "$v" -gt "$best" ]; then best=$v; bn=$n; fi
+  done <<< "$(note | cut -d' ' -f2-)"
+  riga="$best $bn"
+  [ -n "$bn" ] && [ "$best" -gt 0 ] && echo "$riga"
 }
 
 riavvia_vpn() {
@@ -146,17 +194,57 @@ e_visibile() {
   [ -n "$s" ] && printf '%s\n' "$2" | grep -qxF -- "$s"
 }
 
+# Segnale della rete in uso troppo debole per SEGNALE_DOPO secondi: cerca un access point noto
+# chiaramente migliore e ci passa. Chiamata solo quando c'e' internet.
+debole_da=-1
+ultima_ricerca_segnale=-999999
+ultimo_avviso_seg=-999999
+controlla_segnale() {
+  local cur=$1 t=$2 seg scan m ap n
+  seg=$(segnale_corrente)
+  if [ -z "$seg" ] || [ "$seg" -ge "$SEGNALE_MIN" ]; then
+    debole_da=-1
+    return 0
+  fi
+  [ "$debole_da" != -1 ] || debole_da=$t
+  [ $((t - debole_da)) -ge "$SEGNALE_DOPO" ] || return 0
+  [ $((t - ultima_ricerca_segnale)) -ge "$PAUSA_SEGNALE" ] || return 0
+  ultima_ricerca_segnale=$t
+  scan=$(scansione)
+  m=$(miglior_ap "$cur" "$scan") || m=""
+  ap=${m%% *}; n=${m#* }
+  if [ -z "$m" ] || [ "$ap" -lt "$SEGNALE_MIN" ] || [ "$ap" -lt $((seg + SEGNALE_MARGINE)) ]; then
+    if [ $((t - ultimo_avviso_seg)) -ge "$LOG_OGNI" ]; then
+      ultimo_avviso_seg=$t
+      log "segnale di '$cur' debole ($seg%) da $((t - debole_da)) s, nessun access point migliore (soglia $SEGNALE_MIN%, margine $SEGNALE_MARGINE)"
+    fi
+    return 0
+  fi
+  log "segnale di '$cur' debole ($seg%) da $((t - debole_da)) s: passo a '$n' ($ap%)"
+  if attiva "$n"; then
+    log "ora su '$n' con internet, segnale $(segnale_corrente)%"
+  else
+    log "'$n' non ha internet: torno a '$cur'"
+    attiva "$cur" || true
+  fi
+  debole_da=-1
+  riavvia_vpn
+  scrivi_sd
+}
+
 ciclo() {
   local cur n t altre
   t=$(ora)
   altre=$(note | wc -l)
-  [ "$altre" -ge 2 ] || return 0           # senza una seconda rete non c'e' niente da fare
+  [ "$altre" -ge 1 ] || return 0           # nessuna rete nota: niente da fare
   cur=$(corrente)
   if con_ip && online; then
     if [ "$giu_da" != -1 ]; then log "internet di nuovo su '${cur:-?}' dopo $((t - giu_da)) s"; fi
     giu_da=-1; login_fatto=0
+    controlla_segnale "$cur" "$t"
     return 0
   fi
+  debole_da=-1
   if [ "$giu_da" = -1 ]; then
     giu_da=$t
     log "nessun internet su '${cur:-nessuna rete}'"

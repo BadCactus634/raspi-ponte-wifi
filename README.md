@@ -275,6 +275,15 @@ dispatcher valgono solo per `ponte-wifi`: sulle altre non parte).
   finché funziona**. Non c'è un ritorno periodico alla principale;
 - quando anche quella resta senza internet, o sparisce, prova la successiva tra le note
   visibili, a rotazione (dalla più alta per priorità, poi si riparte da capo; con due sole reti si torna alla principale);
+- **segnale debole**: se il segnale della rete in uso resta sotto `SEGNALE_MIN` (% di nmcli:
+  60 = circa -70 dBm, 50 = -75, 30 = -85; default 60: la guardia ha visto il gateway muto con segnali fra -67 e -75 dBm) per `SEGNALE_DOPO` (20 s) e un altro
+  access point noto visibile è sopra la soglia e almeno `SEGNALE_MARGINE` (15) punti meglio,
+  passa a quello. Vale anche per un altro access point della **stessa** rete (il Pi non fa
+  roaming da solo: una rete con più access point, come uno studentato, lo tiene attaccato a
+  uno lontano finché cade). Con un solo access point visibile non cambia niente; fra due
+  ricerche per segnale passa almeno un minuto, e dopo il cambio resta lì finché il segnale è
+  buono e c'è internet. Il segnale è misurato con `iw dev <scheda> link` (dBm) o
+  `nmcli -f IN-USE,SIGNAL`;
 - sulla principale, prima di cambiare, parte un login sul portale (a 10 s);
 - niente cicli frenetici: un cambio alla volta, almeno 10 s fra due tentativi, e se nessuna rete
   ha internet continua a ruotare ogni 30 s con un solo messaggio di log ogni 5 minuti;

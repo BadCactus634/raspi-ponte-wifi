@@ -13,6 +13,14 @@ WIFI_PSK=""                 # vuoto = rete aperta
 #WIFI2_PSK="password-della-rete"
 #WIFI2_PRIORITA=50
 
+# Segnale debole: se il segnale della rete in uso (% di nmcli: 60 = circa -70 dBm, 50 = -75, 30 = circa
+# -85 dBm) resta sotto SEGNALE_MIN per SEGNALE_DOPO secondi e un altro access point noto
+# (anche della stessa rete) e' sopra la soglia e di almeno SEGNALE_MARGINE punti migliore,
+# il Pi passa a quello. Con un solo access point visibile non cambia niente.
+SEGNALE_MIN=60
+SEGNALE_DOPO=20
+SEGNALE_MARGINE=15
+
 # MAC da presentare alla rete WiFi (es. quello del cellulare gia' autenticato).
 # Vuoto = MAC vero della scheda del Pi.
 # ATTENZIONE: sul telefono usa il MAC "privato/casuale" che il telefono usa PER

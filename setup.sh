@@ -167,6 +167,11 @@ systemctl enable ponte-guardia.service
 echo "== Cambio automatico fra reti WiFi note"
 # Se la rete in uso resta 30 s senza internet e un'altra rete nota e' visibile, passa a quella
 install -m 755 "$QUI/ponte-reti" /usr/local/sbin/ponte-reti
+# Soglie del segnale debole (ponte.conf); le altre si cambiano a mano in /etc/ponte/reti.conf
+printf 'SEGNALE_MIN=%q
+SEGNALE_DOPO=%q
+SEGNALE_MARGINE=%q
+'   "${SEGNALE_MIN:-60}" "${SEGNALE_DOPO:-20}" "${SEGNALE_MARGINE:-15}" > /etc/ponte/reti.conf
 cat > /etc/systemd/system/ponte-reti.service <<'EOF'
 [Unit]
 Description=Passa a un'altra rete WiFi nota se quella in uso resta senza internet

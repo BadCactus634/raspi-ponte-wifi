@@ -30,7 +30,9 @@ nmcli() {
     "-g connection.autoconnect-priority con show id "*) awk -F'|' -v n="${@: -1}" '$1==n{print $2}' "$T/profili" ;;
     "-g 802-11-wireless.ssid con show id "*) awk -F'|' -v n="${@: -1}" '$1==n{print $3}' "$T/profili" ;;
     "-g GENERAL.CONNECTION dev show "*) cat "$T/cur" ;;
-    "-t -f SSID dev wifi list ifname "*) sed 's/:/\\:/g' "$T/vis" ;;
+    "-t -f IN-USE,SIGNAL,SSID dev wifi list ifname "*)
+      # righe di vis: ssid | segnale (default 70) | * se e' l'access point in uso
+      awk -F'|' '{ g = $2 == "" ? 70 : $2; u = $3 == "*" ? "*" : " "; gsub(/:/, "\\:", $1); print u ":" g ":" $1 }' "$T/vis" ;;
     "con up id wg-ponte"*|"--wait 30 con up id wg-ponte"*) echo "vpn su" >> "$T/chiamate" ;;
     "con down id wg-ponte") echo "vpn giu" >> "$T/chiamate" ;;
     *"con up id "*) local tutto="$*"; local n=${tutto#*con up id }; n=${n%% *}; echo "su $n" >> "$T/chiamate"; echo "$n" > "$T/cur" ;;
@@ -42,6 +44,8 @@ sleep() { SECONDS=$((SECONDS + ${1:-1})); }
 logger() { :; }
 con_ip() { [ -s "$T/cur" ]; }
 online() { [ -s "$T/cur" ] && grep -qx "$(cat "$T/cur")" "$T/inet"; }
+echo 80 > "$T/seg"
+segnale_corrente() { cat "$T/seg"; }
 mountpoint() { return 1; }
 systemctl() { echo "systemctl $*" >> "$T/chiamate"; }
 
@@ -107,6 +111,40 @@ verifica "cambi in 10 minuti ragionevoli (un cambio ogni ~30+ s)" ok "$r"
 righe=$(wc -l < "$T/log")
 [ "$righe" -le 40 ] && r=ok || r="$righe"
 verifica "righe di log limitate" ok "$r"
+
+echo "== 7. segnale debole sulla principale, un altro access point della stessa rete e' molto meglio"
+: > "$T/chiamate"; : > "$T/log"; giu_da=-1; debole_da=-1; ultima_ricerca_segnale=-999999
+printf 'ponte-wifi\nponte-wifi-2\nponte-wifi-3\n' > "$T/inet"; echo ponte-wifi > "$T/cur"
+printf 'Rete Principale|35|*\nRete Principale|70\nHotspot - del telefono|20\n' > "$T/vis"; echo 35 > "$T/seg"
+passa 15
+verifica "prima di 20 s non cambia" 0 "$(cambi)"
+passa 20
+verifica "riassocia alla rete col segnale migliore" ponte-wifi "$(ultima)"
+verifica "una sola scelta" 1 "$(cambi)"
+verifica "VPN riavviata" "vpn giu" "$(grep '^vpn' "$T/chiamate" | head -n1)"
+echo 80 > "$T/seg"; passa 200
+verifica "poi resta (segnale buono)" 1 "$(cambi)"
+
+echo "== 8. segnale debole ma nessuno chiaramente migliore: non cambia"
+: > "$T/chiamate"; debole_da=-1; ultima_ricerca_segnale=-999999
+printf 'Rete Principale|35|*\nRete Principale|45\nHotspot - del telefono|48\n' > "$T/vis"; echo 35 > "$T/seg"
+passa 100
+verifica "+10 non basta" 0 "$(cambi)"
+printf 'Rete Principale|30|*\nRete Principale|45\n' > "$T/vis"; echo 30 > "$T/seg"; debole_da=-1; ultima_ricerca_segnale=-999999
+passa 100
+verifica "sotto la soglia minima non vale nemmeno se +15" 0 "$(cambi)"
+printf 'Rete Principale|35|*\n' > "$T/vis"; echo 35 > "$T/seg"; debole_da=-1; ultima_ricerca_segnale=-999999
+passa 100
+verifica "un solo access point: niente" 0 "$(cambi)"
+
+echo "== 9. segnale debole, l'hotspot e' molto meglio: ci passa e ci resta"
+printf 'Rete Principale|35|*\nHotspot - del telefono|75\n' > "$T/vis"; debole_da=-1; ultima_ricerca_segnale=-999999
+echo ponte-wifi > "$T/cur"; echo 35 > "$T/seg"
+passa 30
+verifica "passa all'hotspot" ponte-wifi-2 "$(ultima)"
+echo 80 > "$T/seg"; printf 'Rete Principale|90\nHotspot - del telefono|80|*\n' > "$T/vis"
+n=$(cambi); passa 300
+verifica "resta sull'hotspot con segnale sopra la soglia" "$n" "$(cambi)"
 
 echo
 echo "Risultato: $ok ok, $ko ko"

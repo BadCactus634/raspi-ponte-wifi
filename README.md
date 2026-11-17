@@ -256,7 +256,7 @@ rete come "salvata" e non "password errata". Con il PMF acceso, invece, il chip 
 proprio le chiavi ("key setting validation failed").
 
 Lo schermino conta insieme dispositivi via cavo e sul WiFi (`Connessi 4 dispositivi
-(cavo 3, WiFi 1)`), e mostra "AP spento" in rosso sulla riga LAN. La guardia sorveglia
+(cavo 3, WiFi 1)`), e mostra "AP down" in rosso sulla riga LAN. La guardia sorveglia
 solo la scheda client: se si pianta l'AP, `ponte-ap.service` riparte da solo.
 
 Due cose imparate a spese del ponte, che `wifi-ap.sh --subito` evita:

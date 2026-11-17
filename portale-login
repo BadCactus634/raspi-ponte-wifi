@@ -87,7 +87,7 @@ fi
 curl -s --max-time 10 -D "$TMP/intestazioni" -o "$TMP/pagina" "$PROVA"
 URL=$(cat "$TMP/intestazioni" "$TMP/pagina" 2>/dev/null | tr -d '\r' | grep -oE "https://[^\"' <>]+/portal/[^\"' <>]+" | head -n1)
 if [ -z "$URL" ]; then
-  log "offline ma nessun portale riconosciuto (WiFi giu'? portale cambiato?)"
+  log "offline ma nessun portale riconosciuto (WiFi down? portale cambiato?)"
   stato "portale non trovato"
   exit 1
 fi

@@ -115,6 +115,7 @@ Con un portale diverso (Fortinet, pfSense, UniFi...) l'unica cosa da riscrivere
 | `wifi-ap.sh` | Schede WiFi: chi fa il client e, con una chiavetta, l'access point; dispatcher del portale |
 | `ponte-ap` | Access point con hostapd: indirizzo, NAT, firewall, DHCP/DNS (lo lancia `ponte-ap.service`) |
 | `strumenti/installa-a-caldo.sh` | Aggiorna un ponte acceso con la SD in sola lettura, senza riavvio |
+| `strumenti/controlla-prima-del-deploy.sh` | Dal PC, prima del deploy a caldo: file e sintassi a posto, ponte raggiungibile; se il ponte e' offline lo dice e il deploy si rimanda |
 | `primo-avvio/user-data.example` | cloud-init: utente, chiave SSH, fuso orario; lancia `setup.sh` al primo avvio |
 | `primo-avvio/network-config` | cloud-init non deve configurare nessuna interfaccia |
 | `strumenti/prepara-img.py` | Mette la configurazione dentro l'immagine `.img`, prima di scriverla |
@@ -223,6 +224,11 @@ copia sul Pi, in una cartella, lo script, `ponte.conf`, `ponte-schermo`,
 si ricollega). Scrive sia in `/` sia sotto `/media/root-ro` e alla fine cancella la
 copia di `ponte.conf`. Per ultime sistema le schede WiFi (`wifi-ap.sh --subito`): se
 il ponte non torna online riavvia prima di toccare la SD, e riparte com'era.
+
+Prima di lanciarlo, dal PC: `bash strumenti/controlla-prima-del-deploy.sh` (o `--solo-file` senza rete). Controlla i file e la
+sintassi, poi prova ping e SSH al ponte (`pi@10.42.0.1`, o l'indirizzo dato come argomento). Con il ponte offline (banco spento) esce
+con codice 2 e dice di rimandare: il deploy a caldo si fa solo a banco acceso, con il ponte raggiungibile, e si segue con
+`journalctl -fu installa-a-caldo`.
 
 ## Access point con una chiavetta
 

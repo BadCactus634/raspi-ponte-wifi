@@ -104,7 +104,7 @@ for f in $SOTTO$CONN/*.nmconnection; do
 done
 install -m 600 "$nuovo" "$SOTTO$CONN/$(basename "$nuovo")"
 
-# La regola nella tabella di NM la mette il dispatcher a ogni "up"; ora eth0 e' gia' su.
+# La regola nella tabella di NM la mette il dispatcher a ogni "up"; ora eth0 e' gia' up.
 /etc/NetworkManager/dispatcher.d/91-ponte-vpn wg-ponte up
 
 # Per ultimo le schede WiFi: ricollega il WiFi e scrive sulla SD solo se torna online

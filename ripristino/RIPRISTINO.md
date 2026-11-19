@@ -27,14 +27,14 @@ OctoPrint, il battito verso Kuma e un paio di unita' systemd.
 
 | File | Contenuto | Dove sta |
 |---|---|---|
-| `ponte.conf` | SSID e password WiFi, MAC clonato, MAC della chiavetta, SSID/PSK dell'AP, utente e password del portale, indirizzo VPN, chiavi WireGuard, MAC da non contare | root del repo sul PC (in `.gitignore`); **non e' in nessun backup del repo** (una copia nella cassaforte e' da decidere) |
-| `primo-avvio/user-data` | utente `pi`, hash della password, chiave SSH autorizzata | sul PC (in `.gitignore`); si rifa da `user-data.example` |
-| `credenziali/` | chiave SSH, utente/password e chiave API di OctoPrint, note | sul PC (in `.gitignore`) |
+| `ponte.conf` | SSID e password WiFi, MAC clonato, MAC della chiavetta, SSID/PSK dell'AP, utente e password del portale, indirizzo VPN, chiavi WireGuard, MAC da non contare | root del repo sul PC (in `.gitignore`); copia in cassaforte: `-- CIFRATE/ponte-wifi/ponte.conf` |
+| `primo-avvio/user-data` | utente `pi`, hash della password, chiave SSH autorizzata | sul PC (in `.gitignore`); copia: `-- CIFRATE/ponte-wifi/primo-avvio/user-data`; si rifa da `user-data.example` |
+| `credenziali/` | chiave SSH, utente/password e chiave API di OctoPrint, note | sul PC (in `.gitignore`); copia: `-- CIFRATE/ponte-wifi/credenziali/` |
 | `tft35a.dtbo` | overlay dello schermino | si scarica (comando nel `README.md`) |
-| URL push di Kuma del ponte | per il battito | cassaforte: `-- CIFRATE/vps/control-room.txt` (URL dei monitor push), oppure Kuma (monitor del ponte) |
+| URL push di Kuma del ponte | per il battito | cassaforte: `-- CIFRATE/ponte-wifi/kuma_push.env` (copia del file del Pi), oppure Kuma (monitor del ponte) |
 | peer WireGuard | il ponte e' un peer della VPN unica sulla VPS; la sua chiave e' in `ponte.conf` (`VPN_*`) | se `ponte.conf` e' perso, si genera un peer nuovo sulla VPS (`-- CIFRATE/vpn-aruba/LEGGIMI.txt`) |
 
-Se `ponte.conf` e' perso: si rifa da `ponte.conf.example`; la password del portale e quella dell'AP vanno ritrovate o cambiate.
+La cartella `-- CIFRATE/ponte-wifi/` ha la stessa struttura del repo: basta copiarla nella cartella del repo. Se `ponte.conf` e' perso anche li': si rifa da `ponte.conf.example`; la password del portale e quella dell'AP vanno ritrovate o cambiate.
 
 ## 1. Immagine e SD
 

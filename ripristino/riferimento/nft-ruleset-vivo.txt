@@ -1,0 +1,38 @@
+# Regole nftables VIVE sul ponte (le creano ponte-ap, NetworkManager e octoprint.service; solo riferimento, non si caricano a mano)
+table ip ponte-ap {
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 10.42.1.0/24 oifname "wlwan" masquerade
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		iifname "wlap" oifname "wg-ponte" ct state new drop
+		oifname "wlap" ct state established,related accept
+		oifname "wlap" drop
+	}
+}
+table inet octoprint {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname "wlwan" tcp dport 5000 drop
+	}
+}
+table ip nm-shared-eth0 {
+	chain nat_postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 10.42.0.0/24 ip daddr != 10.42.0.0/24 masquerade
+	}
+
+	chain filter_forward {
+		type filter hook forward priority filter; policy accept;
+		iifname "wlap" oifname "eth0" accept
+		iifname "eth0" oifname "wg-ponte" ct state new drop
+		iifname "wg-ponte" oifname "eth0" accept
+		ip daddr 10.42.0.0/24 oifname "eth0" ct state { established, related } accept
+		ip saddr 10.42.0.0/24 iifname "eth0" accept
+		iifname "eth0" oifname "eth0" accept
+		iifname "eth0" reject
+		oifname "eth0" reject
+	}
+}

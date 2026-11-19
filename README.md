@@ -120,6 +120,7 @@ Con un portale diverso (Fortinet, pfSense, UniFi...) l'unica cosa da riscrivere
 | `primo-avvio/network-config` | cloud-init non deve configurare nessuna interfaccia |
 | `strumenti/prepara-img.py` | Mette la configurazione dentro l'immagine `.img`, prima di scriverla |
 | `strumenti/scrivi-sd.ps1` | Scrive l'immagine sulla SD da Windows e la verifica con SHA256 |
+| `ripristino/` | Ricetta per rifare il ponte da zero se la SD si rompe: `RIPRISTINO.md` passo-passo, `ricrea.sh` (partizione dati, OctoPrint, battito Kuma), copie dei file reali ripulite, riferimenti |
 
 ## Installazione
 

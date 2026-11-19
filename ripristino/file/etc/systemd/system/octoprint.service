@@ -1,0 +1,21 @@
+[Unit]
+Description=OctoPrint (stampante Prusa MK3S+)
+After=network.target
+
+[Service]
+User=pi
+Group=pi
+SupplementaryGroups=dialout
+RuntimeDirectory=octoprint-stampa
+LogsDirectory=octoprint
+ExecStart=/srv/dati/octoprint/venv/bin/octoprint serve --basedir /srv/dati/octoprint/base --host 0.0.0.0 --port 5000
+# La pagina di OctoPrint non deve essere raggiungibile dalla rete dello studentato (wlwan)
+ExecStartPost=+/bin/sh -c 'nft add table inet octoprint; nft "add chain inet octoprint input { type filter hook input priority 0; policy accept; }"; nft add rule inet octoprint input iifname wlwan tcp dport 5000 drop'
+ExecStopPost=+/bin/sh -c 'nft delete table inet octoprint 2>/dev/null; true'
+Restart=always
+RestartSec=10
+# Sotto overlay + partizione dati: se la partizione non c'e' non si parte
+ConditionPathIsMountPoint=/srv/dati
+
+[Install]
+WantedBy=multi-user.target

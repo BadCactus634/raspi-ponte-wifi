@@ -1,0 +1,49 @@
+# Copiare in /srv/dati/octoprint/base/config.yaml (proprietario pi). Sostituire i segnaposto:
+#   api.key       -> vedi raspi-ponte-wifi/credenziali/octoprint-apikey.txt (fuori dal repo)
+#   secretKey     -> non serve: se manca OctoPrint ne genera uno al primo avvio (le sessioni aperte decadono)
+api:
+  key: <VEDI credenziali/octoprint-apikey.txt>
+events:
+  enabled: true
+  subscriptions:
+  # Il file /run/octoprint-stampa/in-corso dice a ponte-guardia di NON riavviare il Pi durante una stampa
+  - command: touch /run/octoprint-stampa/in-corso
+    event: PrintStarted
+    type: system
+  - command: rm -f /run/octoprint-stampa/in-corso
+    event: PrintDone
+    type: system
+  - command: rm -f /run/octoprint-stampa/in-corso
+    event: PrintFailed
+    type: system
+  - command: rm -f /run/octoprint-stampa/in-corso
+    event: PrintCancelled
+    type: system
+plugins:
+  tracking:
+    enabled: false
+printerProfiles:
+  default: _default
+serial:
+  # Niente autoconnect: connettersi resetta la stampante (si collega a mano, vedi RIPRISTINO.md)
+  autoconnect: false
+  baudrate: 0
+  port: AUTO
+  timeout:
+    communicationBusy: 2.0
+server:
+  firstRun: false
+  onlineCheck:
+    enabled: true
+  pluginBlacklist:
+    enabled: true
+temperature:
+  profiles:
+  - bed: 100
+    chamber: null
+    extruder: 210
+    name: ABS
+  - bed: 60
+    chamber: null
+    extruder: 180
+    name: PLA

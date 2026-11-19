@@ -1,0 +1,12 @@
+[Unit]
+Description=Risparmio energetico spento sul chip interno (wlap)
+BindsTo=sys-subsystem-net-devices-wlap.device
+After=sys-subsystem-net-devices-wlap.device hostapd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/iw dev wlap set power_save off
+
+[Install]
+WantedBy=sys-subsystem-net-devices-wlap.device
